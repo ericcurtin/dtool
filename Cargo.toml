@@ -1,0 +1,58 @@
+[package]
+name = "dcopy"
+version = "0.1.0"
+edition = "2021"
+description = "Container image copy utility — like skopeo, written in Rust, modelled on containerd's architecture"
+license = "Apache-2.0"
+
+[[bin]]
+name = "dcopy"
+path = "src/main.rs"
+
+[dependencies]
+# CLI framework — equivalent to cobra/pflag in Go
+clap = { version = "4", features = ["derive", "color", "env"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client — drives the Docker Registry API v2
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+
+# Serialization — JSON manifests, configs, auth tokens
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# OCI Image + Runtime spec types — Rust equivalent of github.com/opencontainers/image-spec
+oci-spec = { version = "0.7", features = ["image", "runtime"] }
+
+# Digest — content-addressable hashing; mirrors github.com/opencontainers/go-digest
+sha2 = "0.10"
+hex = "0.4"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Structured logging — mirrors github.com/sirupsen/logrus / github.com/containerd/log
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Base64 for auth headers
+base64 = "0.22"
+
+# Async utilities — mirrors golang.org/x/sync/errgroup
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["io"] }
+
+# Progress bars during copy
+indicatif = "0.17"
+
+# Docker credential store (~/.docker/config.json)
+dirs = "5"
+
+# Async traits
+async-trait = "0.1"
+
+# Byte buffers
+bytes = "1"
