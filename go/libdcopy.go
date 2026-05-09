@@ -860,9 +860,26 @@ func runImageProxy(sockFD int) error {
 		case "OpenImage", "OpenImageOptional":
 			var ref string
 			json.Unmarshal(rawArgs, &ref) //nolint:errcheck
-			dir, tag := parseOCIRef(ref)
+			fmt.Fprintf(os.Stderr, "[dcopy-proxy] OpenImage ref=%s\n", ref)
+
+			// If DCOPY_OCI_DIR is set, always serve from that pre-built OCI
+			// layout regardless of the transport in the reference.  This lets
+			// dcopy act as a transparent proxy for any transport (docker-daemon:,
+			// docker://, oci:, …) by serving pre-built image data.
+			var dir, tag string
+			if cacheDir := os.Getenv("DCOPY_OCI_DIR"); cacheDir != "" {
+				dir = cacheDir
+				_, tag = parseOCIRef(ref)
+				if tag == "" {
+					tag = "latest"
+				}
+			} else {
+				dir, tag = parseOCIRef(ref)
+			}
+
 			mdata, mdigest, err := readOCIManifest(dir, tag)
 			if err != nil {
+				fmt.Fprintf(os.Stderr, "[dcopy-proxy] OpenImage error: %v\n", err)
 				if method == "OpenImageOptional" {
 					sendMsg(ok2Reply(nil), -1)
 				} else {
