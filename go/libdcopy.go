@@ -787,7 +787,11 @@ type imageHandle struct {
 }
 
 func runImageProxy(sockFD int) error {
-	fmt.Fprintf(os.Stderr, "[dcopy-proxy] starting on fd %d\n", sockFD)
+	// Write to both stderr and a file so we can detect if bootc calls us
+	// even when stderr is redirected.
+	logMsg := fmt.Sprintf("[dcopy-proxy] starting on fd %d\n", sockFD)
+	fmt.Fprint(os.Stderr, logMsg)
+	os.WriteFile("/tmp/dcopy-proxy-called", []byte(logMsg), 0644) //nolint:errcheck
 	// Wrap the inherited fd as a *net.UnixConn for WriteMsgUnix support
 	nc, err := net.FileConn(os.NewFile(uintptr(sockFD), "proxy"))
 	if err != nil {
