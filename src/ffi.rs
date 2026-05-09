@@ -133,6 +133,14 @@ extern "C" {
         image_name: *const c_char,
         dest_path: *const c_char,
     ) -> *mut c_char;
+
+    /// Run the containers-image-proxy protocol v0 on the already-open Unix socket `sockfd`.
+    ///
+    /// This implements the same wire protocol as `skopeo experimental-image-proxy --sockfd N`,
+    /// so dcopy can be hardlinked as /usr/bin/skopeo and bootc will use it transparently.
+    ///
+    /// Returns NULL on success; an "ERROR:…" C string on failure (free with dcopy_free).
+    pub fn dcopy_run_image_proxy(sockfd: c_int) -> *mut c_char;
 }
 
 // ── Safe wrappers ─────────────────────────────────────────────────────────────
@@ -379,6 +387,21 @@ pub fn go_push_manifest(
         .into_owned();
     unsafe { dcopy_free(err_ptr as *mut c_void) };
     Err(Error::Other(msg))
+}
+
+/// Run the containers-image-proxy protocol on the already-open Unix socket `sockfd`.
+/// This implements `skopeo experimental-image-proxy --sockfd N`.
+pub fn go_run_image_proxy(sockfd: i32) -> Result<()> {
+    let err_ptr = unsafe { dcopy_run_image_proxy(sockfd as c_int) };
+    if err_ptr.is_null() {
+        return Ok(());
+    }
+    let msg = unsafe { std::ffi::CStr::from_ptr(err_ptr) }
+        .to_string_lossy()
+        .into_owned();
+    unsafe { dcopy_free(err_ptr as *mut c_void) };
+    let stripped = msg.strip_prefix("ERROR:").unwrap_or(&msg).to_string();
+    Err(Error::Other(stripped))
 }
 
 /// Save `image_name` from the local Docker daemon to an OCI layout directory

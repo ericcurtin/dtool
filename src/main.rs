@@ -21,7 +21,7 @@ use cmd::{
     list_tags::{self, ListTagsOptions},
 };
 use remotes::docker::auth::Credentials;
-use ffi::go_daemon_to_oci_dir;
+use ffi::{go_daemon_to_oci_dir, go_run_image_proxy};
 
 // ── CLI definition ────────────────────────────────────────────────────────────
 
@@ -110,6 +110,16 @@ enum Commands {
         creds: Option<String>,
     },
 
+    /// Implement the containers-image-proxy wire protocol on an already-open
+    /// Unix socket.  This is the same protocol as
+    /// `skopeo experimental-image-proxy --sockfd N` so that dcopy can be
+    /// hardlinked as /usr/bin/skopeo and used transparently by bootc.
+    ExperimentalImageProxy {
+        /// File-descriptor number of the already-open Unix socket.
+        #[arg(long = "sockfd")]
+        sockfd: i32,
+    },
+
     /// Save an image from the local Docker daemon to an OCI layout directory.
     ///
     /// Connects to /var/run/docker.sock, exports the image via the
@@ -193,6 +203,12 @@ async fn dispatch(cmd: Commands) -> error::Result<()> {
                 creds: creds.as_deref().and_then(parse_creds),
             };
             list_tags::run(&image, opts).await
+        }
+
+        Commands::ExperimentalImageProxy { sockfd } => {
+            go_run_image_proxy(sockfd).map_err(|e| {
+                crate::error::Error::Other(format!("experimental-image-proxy: {e}"))
+            })
         }
 
         Commands::SaveOci { image, dest } => {
