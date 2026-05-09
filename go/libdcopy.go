@@ -787,7 +787,8 @@ type imageHandle struct {
 }
 
 func runImageProxy(sockFD int) error {
-	fmt.Fprintf(os.Stderr, "[dcopy-proxy] starting on fd %d\n", sockFD)
+	fmt.Fprintf(os.Stderr, "[dcopy-proxy] starting on fd %d DCOPY_OCI_DIR=%s\n",
+		sockFD, os.Getenv("DCOPY_OCI_DIR"))
 	// Wrap the inherited fd as a *net.UnixConn for WriteMsgUnix support
 	nc, err := net.FileConn(os.NewFile(uintptr(sockFD), "proxy"))
 	if err != nil {
