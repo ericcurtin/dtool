@@ -124,6 +124,15 @@ extern "C" {
         data: *const c_char,
         data_len: c_int,
     ) -> *mut c_char;
+
+    /// Read `image_name` from the local Docker daemon (via /var/run/docker.sock)
+    /// and write it as an OCI image layout directory at `dest_path`.
+    ///
+    /// Returns NULL on success; an "ERROR:…" C string on failure (free with dcopy_free).
+    pub fn dcopy_daemon_to_oci_dir(
+        image_name: *const c_char,
+        dest_path: *const c_char,
+    ) -> *mut c_char;
 }
 
 // ── Safe wrappers ─────────────────────────────────────────────────────────────
@@ -370,4 +379,21 @@ pub fn go_push_manifest(
         .into_owned();
     unsafe { dcopy_free(err_ptr as *mut c_void) };
     Err(Error::Other(msg))
+}
+
+/// Save `image_name` from the local Docker daemon to an OCI layout directory
+/// at `dest_path`.  Connects to `/var/run/docker.sock`.
+pub fn go_daemon_to_oci_dir(image_name: &str, dest_path: &str) -> Result<()> {
+    let err_ptr = unsafe {
+        dcopy_daemon_to_oci_dir(cstr(image_name).as_ptr(), cstr(dest_path).as_ptr())
+    };
+    if err_ptr.is_null() {
+        return Ok(());
+    }
+    let msg = unsafe { std::ffi::CStr::from_ptr(err_ptr) }
+        .to_string_lossy()
+        .into_owned();
+    unsafe { dcopy_free(err_ptr as *mut c_void) };
+    let stripped = msg.strip_prefix("ERROR:").unwrap_or(&msg).to_string();
+    Err(Error::Other(stripped))
 }

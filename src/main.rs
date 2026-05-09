@@ -21,6 +21,7 @@ use cmd::{
     list_tags::{self, ListTagsOptions},
 };
 use remotes::docker::auth::Credentials;
+use ffi::go_daemon_to_oci_dir;
 
 // ── CLI definition ────────────────────────────────────────────────────────────
 
@@ -108,6 +109,24 @@ enum Commands {
         #[arg(long)]
         creds: Option<String>,
     },
+
+    /// Save an image from the local Docker daemon to an OCI layout directory.
+    ///
+    /// Connects to /var/run/docker.sock, exports the image via the
+    /// GET /images/{name}/get endpoint, and writes the result as an OCI image
+    /// layout (oci-layout + index.json + blobs/) at DEST.
+    ///
+    /// The index.json is annotated with org.opencontainers.image.ref.name so
+    /// that tools like bootc can reference the image with oci:DEST:TAG.
+    ///
+    /// Example:
+    ///   dcopy save-oci myimage:latest /output/.oci-dir
+    SaveOci {
+        /// Image name as understood by the Docker daemon (e.g. myimage:latest)
+        image: String,
+        /// Destination OCI layout directory (will be created/replaced)
+        dest: String,
+    },
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -174,6 +193,16 @@ async fn dispatch(cmd: Commands) -> error::Result<()> {
                 creds: creds.as_deref().and_then(parse_creds),
             };
             list_tags::run(&image, opts).await
+        }
+
+        Commands::SaveOci { image, dest } => {
+            // Strip optional docker-daemon:// prefix for convenience.
+            let name = image
+                .strip_prefix("docker-daemon://")
+                .unwrap_or(&image);
+            go_daemon_to_oci_dir(name, &dest).map_err(|e| {
+                crate::error::Error::Other(format!("save-oci: {e}"))
+            })
         }
     }
 }
