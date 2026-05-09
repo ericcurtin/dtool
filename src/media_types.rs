@@ -74,8 +74,7 @@ pub const OCI_LAYER_ZSTD_ENCRYPTED: &str =
 // ── Accept header values for manifest negotiation ────────────────────────────
 
 /// The ordered list of media types sent in `Accept:` when fetching a manifest.
-/// Mirrors the list used in containerd's core/remotes/docker/fetcher.go and
-/// skopeo's go.podman.io/image/v5/manifest package.
+/// Mirrors the list used in containerd's core/remotes/docker/fetcher.go.
 pub const MANIFEST_ACCEPT: &str = concat!(
     "application/vnd.oci.image.manifest.v1+json,",
     "application/vnd.oci.image.index.v1+json,",

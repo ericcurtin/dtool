@@ -1,6 +1,6 @@
 /// `dcopy copy` — copy an image between two transports.
 ///
-/// Mirrors `skopeo copy`, implemented using containerd's fetch/push model:
+/// Implemented using containerd's fetch/push model:
 ///   1. Resolve the source manifest (get a stable digest)
 ///   2. Walk the descriptor tree (index → manifest → config + layers)
 ///   3. For each blob: check if it already exists at dest, skip if so

@@ -1,7 +1,6 @@
 /// `dcopy list-tags` — list all tags for an image repository.
 ///
-/// Mirrors `skopeo list-tags` — calls the OCI Distribution Spec
-/// `/v2/{name}/tags/list` endpoint.
+/// Calls the OCI Distribution Spec `/v2/{name}/tags/list` endpoint.
 use serde::Serialize;
 
 use crate::error::{Error, Result};

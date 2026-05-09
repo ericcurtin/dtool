@@ -40,7 +40,7 @@ import (
 )
 
 // Accept header sent when fetching manifests — same list as containerd's
-// core/remotes/docker/fetcher.go and skopeo's go.podman.io/image/v5/manifest.
+// core/remotes/docker/fetcher.go.
 const manifestAccept = "application/vnd.oci.image.manifest.v1+json," +
 	"application/vnd.oci.image.index.v1+json," +
 	"application/vnd.docker.distribution.manifest.v2+json," +

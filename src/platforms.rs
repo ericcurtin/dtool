@@ -31,7 +31,7 @@ impl Platform {
     /// Mirrors containerd's `platforms.Default()`:
     /// container images are always Linux, so on non-Linux hosts (e.g. macOS,
     /// Windows with Docker Desktop) we default to `linux/<host-arch>` — the
-    /// same behaviour as `docker pull` and `skopeo copy` on those platforms.
+    /// same behaviour as `docker pull` on those platforms.
     pub fn host() -> Self {
         let arch = normalize_arch(std::env::consts::ARCH);
         let variant = host_variant(std::env::consts::ARCH);

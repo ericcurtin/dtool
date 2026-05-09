@@ -1,6 +1,6 @@
 /// dcopy — container image copy utility
 ///
-/// Like skopeo, written in Rust.  The internal architecture mirrors
+/// Written in Rust.  The internal architecture mirrors
 /// containerd's core/remotes/ and core/images/ packages.
 mod cmd;
 mod digest;
@@ -34,7 +34,7 @@ use remotes::docker::auth::Credentials;
 #[command(
     name = "dcopy",
     version,
-    about = "Copy container images — like skopeo, written in Rust",
+    about = "Copy container images between registries and local formats",
     long_about = None,
 )]
 struct Cli {

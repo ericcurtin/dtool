@@ -1,7 +1,7 @@
 /// `dcopy inspect` — show image metadata.
 ///
-/// Mirrors `skopeo inspect` — fetches the manifest and config from the registry
-/// and prints image metadata as JSON without pulling the full image layers.
+/// Fetches the manifest and config from the registry and prints image
+/// metadata as JSON without pulling the full image layers.
 use serde::Serialize;
 use tracing::debug;
 
@@ -34,7 +34,7 @@ impl Default for InspectOptions {
 }
 
 /// The structured output of `dcopy inspect`.
-/// Mirrors skopeo's `inspectOutput` struct.
+/// Structured output of `dcopy inspect`.
 #[derive(Debug, Serialize)]
 pub struct InspectOutput {
     #[serde(rename = "Name")]

@@ -1,6 +1,6 @@
 /// Image reference parsing.
 ///
-/// Supports the same transport:reference notation as skopeo, modelled on
+/// Transport-prefixed image reference parsing, modelled on
 /// go.podman.io/image/v5/transports/alltransports.
 ///
 /// Supported transports (MVP):
@@ -13,7 +13,7 @@ use std::str::FromStr;
 
 use crate::error::{Error, Result};
 
-/// Supported image transports — mirrors containerd's remotes and skopeo's transports.
+/// Supported image transports — mirrors containerd's remotes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Transport {
     /// Docker Registry API v2 (OCI Distribution Spec)
@@ -53,7 +53,7 @@ pub struct ImageRef {
 /// Parsed components of a `docker://` reference.
 ///
 /// Mirrors the normalisation performed by go.podman.io/image/v5/docker/reference
-/// and github.com/distribution/reference (shared by both skopeo and containerd).
+/// and github.com/distribution/reference (shared by containerd and the distribution project).
 #[derive(Debug, Clone)]
 pub struct DockerRef {
     /// Hostname (+ optional port) of the registry.
