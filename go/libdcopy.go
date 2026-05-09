@@ -787,8 +787,8 @@ type imageHandle struct {
 }
 
 func runImageProxy(sockFD int) error {
-	// Wrap the inherited fd as a *net.UnixConn so we can call WriteMsgUnix
-	// (needed for SCM_RIGHTS blob-fd passing).
+	fmt.Fprintf(os.Stderr, "[dcopy-proxy] starting on fd %d\n", sockFD)
+	// Wrap the inherited fd as a *net.UnixConn for WriteMsgUnix support
 	nc, err := net.FileConn(os.NewFile(uintptr(sockFD), "proxy"))
 	if err != nil {
 		return fmt.Errorf("wrap sockfd %d: %w", sockFD, err)
@@ -850,6 +850,7 @@ func runImageProxy(sockFD int) error {
 			return fmt.Errorf("read message: %w", err)
 		}
 
+		fmt.Fprintf(os.Stderr, "[dcopy-proxy] method=%s args=%s\n", method, string(rawArgs))
 		switch method {
 
 		case "Initialize":
