@@ -787,11 +787,7 @@ type imageHandle struct {
 }
 
 func runImageProxy(sockFD int) error {
-	// Write to both stderr and a file so we can detect if bootc calls us
-	// even when stderr is redirected.
-	logMsg := fmt.Sprintf("[dcopy-proxy] starting on fd %d\n", sockFD)
-	fmt.Fprint(os.Stderr, logMsg)
-	os.WriteFile("/tmp/dcopy-proxy-called", []byte(logMsg), 0644) //nolint:errcheck
+	fmt.Fprintf(os.Stderr, "[dcopy-proxy] starting on fd %d\n", sockFD)
 	// Wrap the inherited fd as a *net.UnixConn for WriteMsgUnix support
 	nc, err := net.FileConn(os.NewFile(uintptr(sockFD), "proxy"))
 	if err != nil {
@@ -854,7 +850,6 @@ func runImageProxy(sockFD int) error {
 			return fmt.Errorf("read message: %w", err)
 		}
 
-		fmt.Fprintf(os.Stderr, "[dcopy-proxy] method=%s args=%s\n", method, string(rawArgs))
 		switch method {
 
 		case "Initialize":
@@ -864,7 +859,7 @@ func runImageProxy(sockFD int) error {
 		case "OpenImage", "OpenImageOptional":
 			var ref string
 			json.Unmarshal(rawArgs, &ref) //nolint:errcheck
-			fmt.Fprintf(os.Stderr, "[dcopy-proxy] OpenImage ref=%s\n", ref)
+			fmt.Fprintf(os.Stderr, "[dcopy-proxy] OpenImage: %s\n", ref)
 
 			// If DCOPY_OCI_DIR is set, always serve from that pre-built OCI
 			// layout regardless of the transport in the reference.  This lets
@@ -883,7 +878,7 @@ func runImageProxy(sockFD int) error {
 
 			mdata, mdigest, err := readOCIManifest(dir, tag)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "[dcopy-proxy] OpenImage error: %v\n", err)
+				fmt.Fprintf(os.Stderr, "[dcopy-proxy] OpenImage error: %s: %v\n", ref, err)
 				if method == "OpenImageOptional" {
 					sendMsg(ok2Reply(nil), -1)
 				} else {
