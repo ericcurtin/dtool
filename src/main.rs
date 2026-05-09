@@ -5,6 +5,7 @@
 mod cmd;
 mod digest;
 mod error;
+mod ffi;
 mod images;
 mod media_types;
 mod platforms;
