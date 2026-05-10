@@ -595,9 +595,6 @@ func daemonToOCIDir(imageName, destPath string) error {
 	}
 
 	// ── Read every tar entry into memory ─────────────────────────────────────
-	// The docker-archive is typically a few hundred MB to a few GB; reading into
-	// a map[path][]byte is the simplest approach given that we need random access
-	// to entries (manifest.json may appear last in the stream).
 	entries := map[string][]byte{}
 	tr := tar.NewReader(resp.Body)
 	for {
@@ -608,10 +605,21 @@ func daemonToOCIDir(imageName, destPath string) error {
 		if err != nil {
 			return fmt.Errorf("read tar: %w", err)
 		}
+		// Handle hard links: copy data from the already-seen link target.
+		if hdr.Typeflag == tar.TypeLink {
+			fmt.Fprintf(os.Stderr, "[dcopy-save] hardlink %s → %s\n", hdr.Name, hdr.Linkname)
+			if targetData, ok := entries[hdr.Linkname]; ok {
+				entries[hdr.Name] = targetData
+			} else {
+				return fmt.Errorf("hard link target %s not yet seen for %s", hdr.Linkname, hdr.Name)
+			}
+			continue
+		}
 		data, err := io.ReadAll(tr)
 		if err != nil {
 			return fmt.Errorf("read tar entry %s: %w", hdr.Name, err)
 		}
+		fmt.Fprintf(os.Stderr, "[dcopy-save] entry %s size=%d gzip=%v\n", hdr.Name, len(data), isGzip(data))
 		entries[hdr.Name] = data
 	}
 
@@ -691,6 +699,7 @@ func daemonToOCIDir(imageName, destPath string) error {
 		if err != nil {
 			return err
 		}
+		fmt.Fprintf(os.Stderr, "[dcopy-save] layer %s → digest=%s size=%d\n", layerPath, layerDigest, len(blobData))
 		ociLayers = append(ociLayers, ociDescriptor{
 			MediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
 			Digest:    layerDigest,
