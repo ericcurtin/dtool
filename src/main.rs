@@ -127,6 +127,12 @@ enum Commands {
         /// File-descriptor number of the already-open Unix socket.
         #[arg(long = "sockfd")]
         sockfd: i32,
+        /// Disable authentication (accepted but ignored).
+        #[arg(long = "no-creds")]
+        no_creds: bool,
+        /// Extra flags (accepted but ignored for forward compat).
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        extra: Vec<String>,
     },
 
     /// Minimal podman-compatible interface for bootc's imgstorage management.
@@ -253,7 +259,7 @@ async fn dispatch(cmd: Commands, _root: &str) -> error::Result<()> {
             Ok(())
         }
 
-        Commands::ExperimentalImageProxy { sockfd } => {
+        Commands::ExperimentalImageProxy { sockfd, .. } => {
             go_run_image_proxy(sockfd).map_err(|e| {
                 crate::error::Error::Other(format!("experimental-image-proxy: {e}"))
             })
