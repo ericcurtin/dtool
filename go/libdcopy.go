@@ -1063,10 +1063,11 @@ func runImageProxy(sockFD int) error {
 		case "FinishPipe":
 			var pid uint32
 			json.Unmarshal(arg0(), &pid) //nolint:errcheck
-			if w, ok := pipewEnds[pid]; ok {
-				w.Close() //nolint:errcheck
-				delete(pipewEnds, pid)
-			}
+			// Do NOT close the write end here: containers-image-proxy-rs uses
+			// join!(read_to_end, finish_pipe) so FinishPipe can arrive while the
+			// goroutine is still streaming data. Closing w early would truncate
+			// the stream. The goroutine's defer w.Close() handles cleanup.
+			delete(pipewEnds, pid)
 			sendOK(nil, 0)
 
 		case "CloseImage":
