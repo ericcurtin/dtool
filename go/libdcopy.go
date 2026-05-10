@@ -28,8 +28,6 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -758,18 +756,15 @@ func daemonToOCIDir(imageName, destPath string) error {
 
 // ── dcopy_run_image_proxy ─────────────────────────────────────────────────────
 
-// dcopy_run_image_proxy implements the containers-image-proxy protocol v0.
+// dcopy_run_image_proxy implements the containers-image-proxy protocol.
 //
-// bootc (via the containers-image-proxy-rs Rust crate) calls
-// "skopeo experimental-image-proxy --sockfd N" to get image data without
-// having to pull from a registry.  We implement that same protocol so dcopy
-// can act as a drop-in skopeo replacement (hardlinked as /usr/bin/skopeo).
+// containers-image-proxy-rs v0.9+ passes the proxy socket as stdin (fd 0)
+// via c.stdin(Stdio::from(theirsock)) using AF_UNIX SOCK_SEQPACKET.
 //
-// Protocol (v0):
-//   Each message is framed as [uint32 big-endian length][JSON bytes].
-//   Request:  {"method": "...", "args": <value>}
-//   Reply:    {"success": bool, "value": <value>, "err": "..."}
-//   FetchBlob reply additionally sends the pipe read-fd via SCM_RIGHTS.
+// Protocol: raw JSON datagrams over SOCK_SEQPACKET — no length prefix.
+//   Request:  {"method":"...","args":[...]}   (one send per message)
+//   Reply:    {"success":bool,"error":"...","pipeid":N,"value":...}
+//   Blob data and manifests are streamed via pipe fds passed in SCM_RIGHTS.
 //
 //export dcopy_run_image_proxy
 func dcopy_run_image_proxy(cSockFD C.int) *C.char {
@@ -786,10 +781,22 @@ type imageHandle struct {
 	manifestDigest string
 }
 
+// proxyReply is the wire reply struct for the containers-image-proxy protocol.
+type proxyReply struct {
+	Success bool        `json:"success"`
+	Error   string      `json:"error"`
+	PipeId  uint32      `json:"pipeid"`
+	Value   interface{} `json:"value"`
+}
+
+// maxMsgSize matches the skopeo constant; no JSON message exceeds this.
+const maxMsgSize = 32 * 1024
+
 func runImageProxy(sockFD int) error {
 	fmt.Fprintf(os.Stderr, "[dcopy-proxy] starting on fd %d DCOPY_OCI_DIR=%s\n",
 		sockFD, os.Getenv("DCOPY_OCI_DIR"))
-	// Wrap the inherited fd as a *net.UnixConn for WriteMsgUnix support
+
+	// Wrap the inherited SEQPACKET fd as a *net.UnixConn.
 	nc, err := net.FileConn(os.NewFile(uintptr(sockFD), "proxy"))
 	if err != nil {
 		return fmt.Errorf("wrap sockfd %d: %w", sockFD, err)
@@ -802,70 +809,62 @@ func runImageProxy(sockFD int) error {
 
 	handles := map[uint32]*imageHandle{}
 	var nextHandle uint32 = 1
+	var nextPipe uint32 = 1
+	pipewEnds := map[uint32]*os.File{} // pipeid → write end (close on FinishPipe)
 
-	// readMsg reads one length-prefixed JSON message from the socket.
-	readMsg := func() (method string, args json.RawMessage, err error) {
-		var lb [4]byte
-		if _, err = io.ReadFull(uc, lb[:]); err != nil {
-			return
-		}
-		buf := make([]byte, binary.BigEndian.Uint32(lb[:]))
-		if _, err = io.ReadFull(uc, buf); err != nil {
-			return
-		}
-		var req struct {
-			Method string          `json:"method"`
-			Args   json.RawMessage `json:"args"`
-		}
-		err = json.Unmarshal(buf, &req)
-		return req.Method, req.Args, err
-	}
-
-	// sendMsg sends a length-prefixed JSON reply, optionally with a file
-	// descriptor attached via SCM_RIGHTS (set fd < 0 to skip).
-	sendMsg := func(rep interface{}, fd int) {
-		data, _ := json.Marshal(rep)
-		var lb [4]byte
-		binary.BigEndian.PutUint32(lb[:], uint32(len(data)))
-		msg := append(lb[:], data...)
-		if fd >= 0 {
-			uc.WriteMsgUnix(msg, syscall.UnixRights(fd), nil) //nolint:errcheck
+	// sendOK sends a success reply, optionally attaching fds via SCM_RIGHTS.
+	sendOK := func(value interface{}, pipeid uint32, fds ...int) {
+		data, _ := json.Marshal(proxyReply{Success: true, PipeId: pipeid, Value: value})
+		if len(fds) > 0 {
+			uc.WriteMsgUnix(data, syscall.UnixRights(fds...), nil) //nolint:errcheck
 		} else {
-			uc.Write(msg) //nolint:errcheck
+			uc.Write(data) //nolint:errcheck
 		}
 	}
-
-	ok2Reply := func(value interface{}) map[string]interface{} {
-		return map[string]interface{}{"success": true, "value": value}
-	}
-	errReply := func(e string) map[string]interface{} {
-		return map[string]interface{}{"success": false, "err": e}
+	sendErr := func(e string) {
+		data, _ := json.Marshal(proxyReply{Error: e})
+		uc.Write(data) //nolint:errcheck
 	}
 
+	buf := make([]byte, maxMsgSize)
 	for {
-		method, rawArgs, err := readMsg()
+		// SEQPACKET: each Read returns exactly one complete datagram.
+		n, err := uc.Read(buf)
+		if err == io.EOF {
+			return nil
+		}
 		if err != nil {
-			if err == io.EOF {
-				return nil
-			}
-			return fmt.Errorf("read message: %w", err)
+			return fmt.Errorf("read: %w", err)
 		}
 
-		switch method {
+		var req struct {
+			Method string            `json:"method"`
+			Args   []json.RawMessage `json:"args"`
+		}
+		if err := json.Unmarshal(buf[:n], &req); err != nil {
+			sendErr(fmt.Sprintf("parse request: %v", err))
+			continue
+		}
+
+		arg0 := func() json.RawMessage {
+			if len(req.Args) > 0 {
+				return req.Args[0]
+			}
+			return nil
+		}
+
+		switch req.Method {
 
 		case "Initialize":
-			// Negotiate protocol version 0.
-			sendMsg(ok2Reply(uint32(0)), -1)
+			// Return the base protocol version; containers-image-proxy-rs
+			// requires >=0.2.3, <0.3.0 per semver::VersionReq::parse("0.2.3").
+			sendOK("0.2.3", 0)
 
 		case "OpenImage", "OpenImageOptional":
 			var ref string
-			json.Unmarshal(rawArgs, &ref) //nolint:errcheck
-			fmt.Fprintf(os.Stderr, "[dcopy-proxy] OpenImage: %s\n", ref)
+			json.Unmarshal(arg0(), &ref) //nolint:errcheck
+			fmt.Fprintf(os.Stderr, "[dcopy-proxy] %s: %s\n", req.Method, ref)
 
-			// If DCOPY_OCI_DIR is set, always serve from that pre-built OCI
-			// layout regardless of the transport in the reference.  This lets
-			// dcopy act as a transparent proxy for any transport (docker-daemon:,
-			// docker://, oci:, …) by serving pre-built image data.
 			var dir, tag string
 			if cacheDir := os.Getenv("DCOPY_OCI_DIR"); cacheDir != "" {
 				dir = cacheDir
@@ -879,92 +878,180 @@ func runImageProxy(sockFD int) error {
 
 			mdata, mdigest, err := readOCIManifest(dir, tag)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "[dcopy-proxy] OpenImage error: %s: %v\n", ref, err)
-				if method == "OpenImageOptional" {
-					sendMsg(ok2Reply(nil), -1)
+				fmt.Fprintf(os.Stderr, "[dcopy-proxy] %s error: %v\n", req.Method, err)
+				if req.Method == "OpenImageOptional" {
+					sendOK(uint32(0), 0) // 0 = not found
 				} else {
-					sendMsg(errReply(err.Error()), -1)
+					sendErr(err.Error())
 				}
 				continue
 			}
 			h := nextHandle
 			nextHandle++
 			handles[h] = &imageHandle{dir, mdata, mdigest}
-			sendMsg(ok2Reply(h), -1)
+			sendOK(h, 0)
 
 		case "GetManifest":
-			// args may be just the handle (int) or {"handle":N,"accept_types":[...]}
 			var h uint32
-			if err := json.Unmarshal(rawArgs, &h); err != nil {
-				// try object form
-				var obj struct {
-					Handle uint32 `json:"handle"`
-				}
-				json.Unmarshal(rawArgs, &obj) //nolint:errcheck
-				h = obj.Handle
+			json.Unmarshal(arg0(), &h) //nolint:errcheck
+			img := handles[h]
+			if img == nil {
+				sendErr("invalid handle")
+				continue
+			}
+			r, w, err := os.Pipe()
+			if err != nil {
+				sendErr(err.Error())
+				continue
+			}
+			pid := nextPipe
+			nextPipe++
+			pipewEnds[pid] = w
+			go func(data []byte) { defer w.Close(); w.Write(data) }(img.manifestData) //nolint:errcheck
+			// value = digest string; pipeid = pid; SCM_RIGHTS = [r]
+			sendOK(img.manifestDigest, pid, int(r.Fd()))
+			r.Close()
+
+		case "GetFullConfig":
+			var h uint32
+			json.Unmarshal(arg0(), &h) //nolint:errcheck
+			img := handles[h]
+			if img == nil {
+				sendErr("invalid handle")
+				continue
+			}
+			cfgData, err := readOCIConfig(img.ociDir, img.manifestData)
+			if err != nil {
+				sendErr(err.Error())
+				continue
+			}
+			r, w, err := os.Pipe()
+			if err != nil {
+				sendErr(err.Error())
+				continue
+			}
+			pid := nextPipe
+			nextPipe++
+			pipewEnds[pid] = w
+			go func(data []byte) { defer w.Close(); w.Write(data) }(cfgData) //nolint:errcheck
+			sendOK(nil, pid, int(r.Fd()))
+			r.Close()
+
+		case "GetBlob":
+			var h uint32
+			var digest string
+			json.Unmarshal(arg0(), &h) //nolint:errcheck
+			if len(req.Args) > 1 {
+				json.Unmarshal(req.Args[1], &digest) //nolint:errcheck
 			}
 			img := handles[h]
 			if img == nil {
-				sendMsg(errReply("invalid handle"), -1)
+				sendErr("invalid handle")
 				continue
 			}
-			sendMsg(ok2Reply(map[string]interface{}{
-				"manifest": base64.StdEncoding.EncodeToString(img.manifestData),
-				"digest":   img.manifestDigest,
-			}), -1)
-
-		case "FetchBlob":
-			var args struct {
-				Handle uint32 `json:"handle"`
-				Digest string `json:"digest"`
-			}
-			json.Unmarshal(rawArgs, &args) //nolint:errcheck
-			img := handles[args.Handle]
-			if img == nil {
-				sendMsg(errReply("invalid handle"), -1)
-				continue
-			}
-			hexDg := strings.TrimPrefix(args.Digest, "sha256:")
-			blobPath := filepath.Join(img.ociDir, "blobs", "sha256", hexDg)
+			blobPath := blobFilePath(img.ociDir, digest)
 			fi, err := os.Stat(blobPath)
 			if err != nil {
-				sendMsg(errReply(err.Error()), -1)
+				sendErr(err.Error())
 				continue
 			}
-			// Create a pipe; stream blob to write-end in a goroutine;
-			// send read-end to client via SCM_RIGHTS.
 			r, w, err := os.Pipe()
 			if err != nil {
-				sendMsg(errReply(err.Error()), -1)
+				sendErr(err.Error())
 				continue
 			}
-			go func(blobPath string, w *os.File) {
+			pid := nextPipe
+			nextPipe++
+			pipewEnds[pid] = w
+			go func(path string) {
 				defer w.Close()
-				f, err := os.Open(blobPath)
+				if f, err := os.Open(path); err == nil {
+					defer f.Close()
+					io.Copy(w, f) //nolint:errcheck
+				}
+			}(blobPath)
+			sendOK(fi.Size(), pid, int(r.Fd()))
+			r.Close()
+
+		case "GetRawBlob":
+			var h uint32
+			var digest string
+			json.Unmarshal(arg0(), &h) //nolint:errcheck
+			if len(req.Args) > 1 {
+				json.Unmarshal(req.Args[1], &digest) //nolint:errcheck
+			}
+			img := handles[h]
+			if img == nil {
+				sendErr("invalid handle")
+				continue
+			}
+			blobPath := blobFilePath(img.ociDir, digest)
+			fi, err := os.Stat(blobPath)
+			if err != nil {
+				sendErr(err.Error())
+				continue
+			}
+			dataR, dataW, _ := os.Pipe()
+			errR, errW, _ := os.Pipe()
+			go func(path string) {
+				defer dataW.Close()
+				defer errW.Close()
+				f, err := os.Open(path)
 				if err != nil {
+					errJSON, _ := json.Marshal(map[string]string{"code": "other", "message": err.Error()})
+					errW.Write(errJSON) //nolint:errcheck
 					return
 				}
 				defer f.Close()
-				io.Copy(w, f) //nolint:errcheck
-			}(blobPath, w)
-			// Reply carries the blob size; the pipe read-fd is attached via SCM_RIGHTS.
-			sendMsg(ok2Reply(fi.Size()), int(r.Fd()))
-			r.Close() // kernel keeps the fd alive in the socket buffer
+				io.Copy(dataW, f) //nolint:errcheck
+			}(blobPath)
+			// value = bloblen (i64); pipeid = 0; SCM_RIGHTS = [dataR, errR]
+			sendOK(fi.Size(), 0, int(dataR.Fd()), int(errR.Fd()))
+			dataR.Close()
+			errR.Close()
+
+		case "FinishPipe":
+			var pid uint32
+			json.Unmarshal(arg0(), &pid) //nolint:errcheck
+			if w, ok := pipewEnds[pid]; ok {
+				w.Close() //nolint:errcheck
+				delete(pipewEnds, pid)
+			}
+			sendOK(nil, 0)
 
 		case "CloseImage":
 			var h uint32
-			json.Unmarshal(rawArgs, &h) //nolint:errcheck
+			json.Unmarshal(arg0(), &h) //nolint:errcheck
 			delete(handles, h)
-			sendMsg(ok2Reply(nil), -1)
+			sendOK(nil, 0)
 
-		case "Finish", "Complete":
-			sendMsg(ok2Reply(nil), -1)
+		case "Shutdown":
+			sendOK(nil, 0)
 			return nil
 
 		default:
-			sendMsg(errReply(fmt.Sprintf("unknown method: %s", method)), -1)
+			fmt.Fprintf(os.Stderr, "[dcopy-proxy] unknown method: %s\n", req.Method)
+			sendErr(fmt.Sprintf("unknown method: %s", req.Method))
 		}
 	}
+}
+
+// blobFilePath returns the path to a blob in an OCI layout directory.
+func blobFilePath(ociDir, digest string) string {
+	return filepath.Join(ociDir, "blobs", "sha256", strings.TrimPrefix(digest, "sha256:"))
+}
+
+// readOCIConfig reads the config blob from an OCI layout, given the manifest.
+func readOCIConfig(ociDir string, manifestData []byte) ([]byte, error) {
+	var manifest struct {
+		Config struct {
+			Digest string `json:"digest"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		return nil, fmt.Errorf("parse manifest for config digest: %w", err)
+	}
+	return os.ReadFile(blobFilePath(ociDir, manifest.Config.Digest))
 }
 
 // parseOCIRef parses an "oci:/path:tag" reference into (dir, tag).

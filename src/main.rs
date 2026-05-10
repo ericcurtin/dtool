@@ -293,75 +293,19 @@ async fn dispatch(cmd: Commands, _root: &str) -> error::Result<()> {
     }
 }
 
-/// Scan /proc/self/fd for the inherited proxy Unix socket fd (> 2).
+/// Return the inherited proxy socket fd.
 ///
-/// containers-image-proxy-rs v0.9+ passes the proxy socket via fd
-/// inheritance without a --sockfd argument.  The proxy sends the
-/// "Initialize" request immediately after spawning us, so the inherited
-/// fd is the only socket that has pending data (POLLIN) when we start.
-/// We poll all candidate sockets simultaneously and return the first
-/// one that has data, falling back to the highest fd if none has data
-/// yet (e.g. very fast startup).
+/// containers-image-proxy-rs v0.9+ passes the proxy socket as **stdin**
+/// (fd 0) via `c.stdin(Stdio::from(theirsock))` using SOCK_SEQPACKET.
+/// Verify fd 0 is actually a socket before returning it.
 fn find_inherited_socket_fd() -> Result<i32, String> {
-    use std::fs;
-
-    let entries = fs::read_dir("/proc/self/fd")
-        .map_err(|e| format!("read /proc/self/fd: {e}"))?;
-
-    let mut candidates: Vec<i32> = entries
-        .filter_map(|e| e.ok())
-        .filter_map(|e| e.file_name().to_str()?.parse::<i32>().ok())
-        .filter(|&n| n > 2) // skip stdin/stdout/stderr
-        .collect();
-    candidates.sort_unstable();
-
-    let mut sockets: Vec<i32> = Vec::new();
-    for fd in &candidates {
-        let flags = unsafe { libc::fcntl(*fd, libc::F_GETFD) };
-        let has_cloexec = flags != -1 && (flags & libc::FD_CLOEXEC) != 0;
-        let link = std::fs::read_link(format!("/proc/self/fd/{fd}"))
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| "?".to_string());
-        match unsafe { libc_getsockopt_so_type(*fd) } {
-            Ok(sock_type) => {
-                eprintln!("[dcopy-proxy] fd {fd} is_socket=true sock_type={sock_type} cloexec={has_cloexec} link={link}");
-                sockets.push(*fd);
-            }
-            Err(_) => {
-                eprintln!("[dcopy-proxy] fd {fd} is_socket=false cloexec={has_cloexec} link={link}");
-            }
+    match unsafe { libc_getsockopt_so_type(0) } {
+        Ok(t) => {
+            eprintln!("[dcopy-proxy] proxy socket at fd 0 (stdin) sock_type={t}");
+            Ok(0)
         }
+        Err(_) => Err("fd 0 (stdin) is not a socket — expected SEQPACKET proxy socket".to_string()),
     }
-
-    if sockets.is_empty() {
-        return Err("no Unix socket found in /proc/self/fd".to_string());
-    }
-
-    // Poll all sockets simultaneously.  containers-image-proxy-rs sends the
-    // Initialize request immediately after spawning us; by the time we reach
-    // this point the message should be in the socket buffer.  Use a 500 ms
-    // timeout so we give it plenty of time to arrive even on slow machines.
-    let mut pollfds: Vec<libc::pollfd> = sockets.iter()
-        .map(|&fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 })
-        .collect();
-    let nready = unsafe {
-        libc::poll(pollfds.as_mut_ptr(), pollfds.len() as libc::nfds_t, 500)
-    };
-    eprintln!("[dcopy-proxy] poll(500ms) nready={nready}");
-    if nready > 0 {
-        for (i, pfd) in pollfds.iter().enumerate() {
-            eprintln!("[dcopy-proxy] fd {} revents={:#x}", pfd.fd, pfd.revents);
-            if (pfd.revents & libc::POLLIN) != 0 {
-                eprintln!("[dcopy-proxy] selecting fd {} (has pending data)", sockets[i]);
-                return Ok(sockets[i]);
-            }
-        }
-    }
-
-    // Fallback: highest-numbered socket (Go runtime allocates at lowest fds).
-    let best = *sockets.last().unwrap();
-    eprintln!("[dcopy-proxy] no socket has pending data; using highest fd {best} as fallback");
-    Ok(best)
 }
 
 /// Get the socket type (SO_TYPE) of fd, or an error if fd is not a socket.
