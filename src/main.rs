@@ -293,14 +293,13 @@ async fn dispatch(cmd: Commands, _root: &str) -> error::Result<()> {
     }
 }
 
-/// Scan /proc/self/fd for an inherited Unix socket fd (> 2).
-///
-/// Logs all found fds to stderr for debugging.
+/// Scan /proc/self/fd for the inherited proxy Unix socket fd (> 2).
 ///
 /// containers-image-proxy-rs v0.9+ passes the proxy socket via fd
-/// inheritance (CommandExt::fd) without a --sockfd argument.  This
-/// function finds that fd by scanning /proc/self/fd and checking each
-/// candidate fd with getsockopt(SO_DOMAIN).
+/// inheritance (CommandExt::fd) without a --sockfd argument.
+/// CommandExt::fd explicitly clears FD_CLOEXEC on the inherited fd,
+/// while Go runtime sockets are created with SOCK_CLOEXEC.
+/// The inherited proxy socket is therefore the only socket without CLOEXEC.
 fn find_inherited_socket_fd() -> Result<i32, String> {
     use std::fs;
 
@@ -315,18 +314,21 @@ fn find_inherited_socket_fd() -> Result<i32, String> {
     candidates.sort_unstable();
 
     for fd in &candidates {
-        match unsafe { libc_getsockopt_so_type(*fd) } {
-            Ok(sock_type) => {
-                eprintln!("[dcopy-proxy] fd {} sock_type={} seqpacket={}",
-                    fd, sock_type, sock_type == libc::SOCK_SEQPACKET);
-                if sock_type == libc::SOCK_SEQPACKET {
-                    return Ok(*fd);
-                }
-            }
-            Err(_) => {} // not a socket
+        let sock_type = match unsafe { libc_getsockopt_so_type(*fd) } {
+            Ok(t) => t,
+            Err(_) => continue, // not a socket
+        };
+        // CommandExt::fd clears FD_CLOEXEC on the inherited fd.
+        // Go runtime sockets are created with SOCK_CLOEXEC and keep the flag.
+        // So the inherited proxy socket is the only socket without CLOEXEC.
+        let flags = unsafe { libc::fcntl(*fd, libc::F_GETFD) };
+        let has_cloexec = flags != -1 && (flags & libc::FD_CLOEXEC) != 0;
+        eprintln!("[dcopy-proxy] fd {} sock_type={} cloexec={}", fd, sock_type, has_cloexec);
+        if !has_cloexec {
+            return Ok(*fd);
         }
     }
-    Err("no inherited SEQPACKET Unix socket found".to_string())
+    Err("no inherited Unix socket found (no non-CLOEXEC socket)".to_string())
 }
 
 /// Get the socket type (SO_TYPE) of fd, or an error if fd is not a socket.
