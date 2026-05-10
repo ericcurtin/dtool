@@ -2,14 +2,14 @@
 /// registry libraries and link the resulting static archive into the Rust binary.
 ///
 /// The Go code lives in `go/` and produces a C-compatible static library
-/// (`libdcopy_go.a`) that the Rust code calls via `src/ffi.rs`.
+/// (`libdtool_go.a`) that the Rust code calls via `src/ffi.rs`.
 use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let go_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("go");
-    let lib_path = out_dir.join("libdcopy_go.a");
+    let lib_path = out_dir.join("libdtool_go.a");
 
     // ── Compile the Go c-archive ──────────────────────────────────────────────
     let status = Command::new("go")
@@ -35,7 +35,7 @@ fn main() {
 
     // ── Tell cargo where the archive lives ────────────────────────────────────
     println!("cargo:rustc-link-search=native={}", out_dir.display());
-    println!("cargo:rustc-link-lib=static=dcopy_go");
+    println!("cargo:rustc-link-lib=static=dtool_go");
 
     // ── Platform-specific link flags required by CGo ─────────────────────────
     //
@@ -64,7 +64,7 @@ fn main() {
     }
 
     // ── Re-run triggers ───────────────────────────────────────────────────────
-    println!("cargo:rerun-if-changed=go/libdcopy.go");
+    println!("cargo:rerun-if-changed=go/libdtool.go");
     println!("cargo:rerun-if-changed=go/go.mod");
     println!("cargo:rerun-if-changed=go/go.sum");
 }

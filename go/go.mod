@@ -1,4 +1,4 @@
-module dcopy_go
+module dtool_go
 
 go 1.24.3
 

@@ -1,12 +1,12 @@
 [package]
-name = "dcopy"
+name = "dtool"
 version = "0.1.0"
 edition = "2021"
 description = "Docker image copy utility"
 license = "Apache-2.0"
 
 [[bin]]
-name = "dcopy"
+name = "dtool"
 path = "src/main.rs"
 
 [dependencies]

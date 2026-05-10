@@ -1,14 +1,14 @@
-/// FFI bindings to the Go/containerd c-archive (`libdcopy_go.a`).
+/// FFI bindings to the Go/containerd c-archive (`libdtool_go.a`).
 ///
-/// Every `extern "C"` declaration here corresponds to an `//export dcopy_*`
-/// function in `go/libdcopy.go`.  The Go functions use containerd's
+/// Every `extern "C"` declaration here corresponds to an `//export dtool_*`
+/// function in `go/libdtool.go`.  The Go functions use containerd's
 /// `core/remotes/docker` package for all registry operations.
 ///
 /// # Memory safety
 ///
 /// - All `*mut c_char` return values are allocated on the C heap by Go
 ///   (via `C.CString` or `C.CBytes`) and **must** be freed by calling
-///   [`dcopy_free`] after use.
+///   [`dtool_free`] after use.
 /// - All `*const c_char` input parameters are read-only; Go copies them
 ///   immediately with `C.GoString`.
 /// - `*mut *mut c_char` output parameters are set to newly-allocated C
@@ -16,18 +16,18 @@
 use std::ffi::{c_char, c_int, c_void};
 
 extern "C" {
-    /// Free a pointer previously returned by any `dcopy_*` function.
+    /// Free a pointer previously returned by any `dtool_*` function.
     ///
     /// Safe to call with NULL (no-op).
-    pub fn dcopy_free(ptr: *mut c_void);
+    pub fn dtool_free(ptr: *mut c_void);
 
     /// List all tags for `registry/repository`.
     ///
     /// Returns JSON-encoded `string[]` on success; `"ERROR:…"` on failure.
     /// `*out_len` is set to the byte length of the returned buffer, or `-1` on error.
     ///
-    /// Caller must free the returned pointer with `dcopy_free`.
-    pub fn dcopy_list_tags(
+    /// Caller must free the returned pointer with `dtool_free`.
+    pub fn dtool_list_tags(
         registry: *const c_char,
         repository: *const c_char,
         username: *const c_char,
@@ -46,8 +46,8 @@ extern "C" {
     ///
     /// On failure returns `"ERROR:…"` and sets `*out_len = -1`.
     ///
-    /// Caller must free all three pointers with `dcopy_free`.
-    pub fn dcopy_fetch_manifest(
+    /// Caller must free all three pointers with `dtool_free`.
+    pub fn dtool_fetch_manifest(
         registry: *const c_char,
         repository: *const c_char,
         reference: *const c_char,
@@ -63,8 +63,8 @@ extern "C" {
     /// Returns the raw blob bytes on success; `"ERROR:…"` on failure.
     /// `*out_len` is set to the byte count, or `-1` on error.
     ///
-    /// Caller must free the returned pointer with `dcopy_free`.
-    pub fn dcopy_fetch_blob(
+    /// Caller must free the returned pointer with `dtool_free`.
+    pub fn dtool_fetch_blob(
         registry: *const c_char,
         repository: *const c_char,
         digest: *const c_char,
@@ -81,8 +81,8 @@ extern "C" {
     ///   - `0`  — blob does not exist
     ///   - `-1` — error; `*out_error` is set to a newly-allocated error string
     ///
-    /// Caller must free `*out_error` (if set) with `dcopy_free`.
-    pub fn dcopy_blob_exists(
+    /// Caller must free `*out_error` (if set) with `dtool_free`.
+    pub fn dtool_blob_exists(
         registry: *const c_char,
         repository: *const c_char,
         digest: *const c_char,
@@ -98,8 +98,8 @@ extern "C" {
     /// swallowed).
     ///
     /// Returns NULL on success; a newly-allocated error C string on failure.
-    /// Caller must free non-NULL returns with `dcopy_free`.
-    pub fn dcopy_push_blob(
+    /// Caller must free non-NULL returns with `dtool_free`.
+    pub fn dtool_push_blob(
         registry: *const c_char,
         repository: *const c_char,
         digest: *const c_char,
@@ -113,8 +113,8 @@ extern "C" {
     /// Push a manifest to `registry/repository` at `reference` (tag or digest).
     ///
     /// Returns NULL on success; a newly-allocated error C string on failure.
-    /// Caller must free non-NULL returns with `dcopy_free`.
-    pub fn dcopy_push_manifest(
+    /// Caller must free non-NULL returns with `dtool_free`.
+    pub fn dtool_push_manifest(
         registry: *const c_char,
         repository: *const c_char,
         reference: *const c_char,
@@ -128,8 +128,8 @@ extern "C" {
     /// Read `image_name` from the local Docker daemon (via /var/run/docker.sock)
     /// and write it as an OCI image layout directory at `dest_path`.
     ///
-    /// Returns NULL on success; an "ERROR:…" C string on failure (free with dcopy_free).
-    pub fn dcopy_daemon_to_oci_dir(
+    /// Returns NULL on success; an "ERROR:…" C string on failure (free with dtool_free).
+    pub fn dtool_daemon_to_oci_dir(
         image_name: *const c_char,
         dest_path: *const c_char,
     ) -> *mut c_char;
@@ -137,10 +137,10 @@ extern "C" {
     /// Run the containers-image-proxy protocol v0 on the already-open Unix socket `sockfd`.
     ///
     /// This implements the same wire protocol as `skopeo experimental-image-proxy --sockfd N`,
-    /// so dcopy can be hardlinked as /usr/bin/skopeo and bootc will use it transparently.
+    /// so dtool can be hardlinked as /usr/bin/skopeo and bootc will use it transparently.
     ///
-    /// Returns NULL on success; an "ERROR:…" C string on failure (free with dcopy_free).
-    pub fn dcopy_run_image_proxy(sockfd: c_int) -> *mut c_char;
+    /// Returns NULL on success; an "ERROR:…" C string on failure (free with dtool_free).
+    pub fn dtool_run_image_proxy(sockfd: c_int) -> *mut c_char;
 }
 
 // ── Safe wrappers ─────────────────────────────────────────────────────────────
@@ -161,8 +161,8 @@ fn cstr(s: &str) -> CString {
     CString::new(s).unwrap_or_else(|_| CString::new("<invalid>").unwrap())
 }
 
-/// Helper: read a raw pointer returned by a `dcopy_*` function, detect the
-/// `"ERROR:…"` sentinel, and free the pointer via `dcopy_free`.
+/// Helper: read a raw pointer returned by a `dtool_*` function, detect the
+/// `"ERROR:…"` sentinel, and free the pointer via `dtool_free`.
 ///
 /// Contract from Go side:
 ///   - On error  : `len = -1`,  returned buffer is a null-terminated error
@@ -171,13 +171,13 @@ fn cstr(s: &str) -> CString {
 ///                 arbitrary (possibly binary) data.
 ///
 /// # Safety
-/// `ptr` must have been returned by a `dcopy_*` call and not yet freed.
+/// `ptr` must have been returned by a `dtool_*` call and not yet freed.
 unsafe fn take_result(ptr: *mut c_char, len: c_int) -> Result<Bytes> {
     if ptr.is_null() {
         return if len == 0 {
             Ok(Bytes::new())
         } else {
-            Err(Error::Other("dcopy_* returned null".to_string()))
+            Err(Error::Other("dtool_* returned null".to_string()))
         };
     }
 
@@ -187,7 +187,7 @@ unsafe fn take_result(ptr: *mut c_char, len: c_int) -> Result<Bytes> {
         let msg = unsafe { std::ffi::CStr::from_ptr(ptr) }
             .to_string_lossy()
             .into_owned();
-        unsafe { dcopy_free(ptr as *mut c_void) };
+        unsafe { dtool_free(ptr as *mut c_void) };
         let stripped = msg.strip_prefix("ERROR:").unwrap_or(&msg).to_string();
         return Err(Error::Other(stripped));
     }
@@ -196,7 +196,7 @@ unsafe fn take_result(ptr: *mut c_char, len: c_int) -> Result<Bytes> {
     let bytes = unsafe {
         std::slice::from_raw_parts(ptr as *const u8, len as usize).to_vec()
     };
-    unsafe { dcopy_free(ptr as *mut c_void) };
+    unsafe { dtool_free(ptr as *mut c_void) };
     Ok(Bytes::from(bytes))
 }
 
@@ -205,7 +205,7 @@ unsafe fn take_result(ptr: *mut c_char, len: c_int) -> Result<Bytes> {
 pub fn go_list_tags(registry: &str, repository: &str, username: &str, password: &str) -> Result<Vec<String>> {
     let mut len: c_int = 0;
     let ptr = unsafe {
-        dcopy_list_tags(
+        dtool_list_tags(
             cstr(registry).as_ptr(),
             cstr(repository).as_ptr(),
             cstr(username).as_ptr(),
@@ -235,7 +235,7 @@ pub fn go_fetch_manifest(
     let mut dg_ptr: *mut c_char = std::ptr::null_mut();
 
     let ptr = unsafe {
-        dcopy_fetch_manifest(
+        dtool_fetch_manifest(
             cstr(registry).as_ptr(),
             cstr(repository).as_ptr(),
             cstr(reference).as_ptr(),
@@ -254,7 +254,7 @@ pub fn go_fetch_manifest(
         let s = unsafe { std::ffi::CStr::from_ptr(ct_ptr) }
             .to_string_lossy()
             .into_owned();
-        unsafe { dcopy_free(ct_ptr as *mut c_void) };
+        unsafe { dtool_free(ct_ptr as *mut c_void) };
         s
     };
     let digest = if dg_ptr.is_null() {
@@ -263,7 +263,7 @@ pub fn go_fetch_manifest(
         let s = unsafe { std::ffi::CStr::from_ptr(dg_ptr) }
             .to_string_lossy()
             .into_owned();
-        unsafe { dcopy_free(dg_ptr as *mut c_void) };
+        unsafe { dtool_free(dg_ptr as *mut c_void) };
         s
     };
 
@@ -281,7 +281,7 @@ pub fn go_fetch_blob(
 ) -> Result<Bytes> {
     let mut len: c_int = 0;
     let ptr = unsafe {
-        dcopy_fetch_blob(
+        dtool_fetch_blob(
             cstr(registry).as_ptr(),
             cstr(repository).as_ptr(),
             cstr(digest).as_ptr(),
@@ -303,7 +303,7 @@ pub fn go_blob_exists(
 ) -> Result<bool> {
     let mut err_ptr: *mut c_char = std::ptr::null_mut();
     let rc = unsafe {
-        dcopy_blob_exists(
+        dtool_blob_exists(
             cstr(registry).as_ptr(),
             cstr(repository).as_ptr(),
             cstr(digest).as_ptr(),
@@ -319,7 +319,7 @@ pub fn go_blob_exists(
             let s = unsafe { std::ffi::CStr::from_ptr(err_ptr) }
                 .to_string_lossy()
                 .into_owned();
-            unsafe { dcopy_free(err_ptr as *mut c_void) };
+            unsafe { dtool_free(err_ptr as *mut c_void) };
             s
         };
         return Err(Error::Other(msg));
@@ -337,7 +337,7 @@ pub fn go_push_blob(
     data: &[u8],
 ) -> Result<()> {
     let err_ptr = unsafe {
-        dcopy_push_blob(
+        dtool_push_blob(
             cstr(registry).as_ptr(),
             cstr(repository).as_ptr(),
             cstr(digest).as_ptr(),
@@ -354,7 +354,7 @@ pub fn go_push_blob(
     let msg = unsafe { std::ffi::CStr::from_ptr(err_ptr) }
         .to_string_lossy()
         .into_owned();
-    unsafe { dcopy_free(err_ptr as *mut c_void) };
+    unsafe { dtool_free(err_ptr as *mut c_void) };
     Err(Error::Other(msg))
 }
 
@@ -368,7 +368,7 @@ pub fn go_push_manifest(
     data: &[u8],
 ) -> Result<()> {
     let err_ptr = unsafe {
-        dcopy_push_manifest(
+        dtool_push_manifest(
             cstr(registry).as_ptr(),
             cstr(repository).as_ptr(),
             cstr(reference).as_ptr(),
@@ -385,21 +385,21 @@ pub fn go_push_manifest(
     let msg = unsafe { std::ffi::CStr::from_ptr(err_ptr) }
         .to_string_lossy()
         .into_owned();
-    unsafe { dcopy_free(err_ptr as *mut c_void) };
+    unsafe { dtool_free(err_ptr as *mut c_void) };
     Err(Error::Other(msg))
 }
 
 /// Run the containers-image-proxy protocol on the already-open Unix socket `sockfd`.
 /// This implements `skopeo experimental-image-proxy --sockfd N`.
 pub fn go_run_image_proxy(sockfd: i32) -> Result<()> {
-    let err_ptr = unsafe { dcopy_run_image_proxy(sockfd as c_int) };
+    let err_ptr = unsafe { dtool_run_image_proxy(sockfd as c_int) };
     if err_ptr.is_null() {
         return Ok(());
     }
     let msg = unsafe { std::ffi::CStr::from_ptr(err_ptr) }
         .to_string_lossy()
         .into_owned();
-    unsafe { dcopy_free(err_ptr as *mut c_void) };
+    unsafe { dtool_free(err_ptr as *mut c_void) };
     let stripped = msg.strip_prefix("ERROR:").unwrap_or(&msg).to_string();
     Err(Error::Other(stripped))
 }
@@ -408,7 +408,7 @@ pub fn go_run_image_proxy(sockfd: i32) -> Result<()> {
 /// at `dest_path`.  Connects to `/var/run/docker.sock`.
 pub fn go_daemon_to_oci_dir(image_name: &str, dest_path: &str) -> Result<()> {
     let err_ptr = unsafe {
-        dcopy_daemon_to_oci_dir(cstr(image_name).as_ptr(), cstr(dest_path).as_ptr())
+        dtool_daemon_to_oci_dir(cstr(image_name).as_ptr(), cstr(dest_path).as_ptr())
     };
     if err_ptr.is_null() {
         return Ok(());
@@ -416,7 +416,7 @@ pub fn go_daemon_to_oci_dir(image_name: &str, dest_path: &str) -> Result<()> {
     let msg = unsafe { std::ffi::CStr::from_ptr(err_ptr) }
         .to_string_lossy()
         .into_owned();
-    unsafe { dcopy_free(err_ptr as *mut c_void) };
+    unsafe { dtool_free(err_ptr as *mut c_void) };
     let stripped = msg.strip_prefix("ERROR:").unwrap_or(&msg).to_string();
     Err(Error::Other(stripped))
 }

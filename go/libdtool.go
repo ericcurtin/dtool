@@ -1,5 +1,5 @@
 // Package main provides a CGo-exported C library that wraps containerd's
-// Docker Registry client for use by the Rust dcopy binary.
+// Docker Registry client for use by the Rust dtool binary.
 //
 // All registry HTTP operations use containerd's auth stack:
 //
@@ -13,7 +13,7 @@
 // Memory contract
 //
 //	All *C.char pointers returned by exported functions are heap-allocated via
-//	C.CString or C.CBytes and MUST be freed by the caller with dcopy_free.
+//	C.CString or C.CBytes and MUST be freed by the caller with dtool_free.
 //	Input *C.char parameters are read-only; Go copies them with C.GoString.
 package main
 
@@ -153,23 +153,23 @@ func cloneRequest(req *http.Request) (*http.Request, error) {
 	return clone, nil
 }
 
-// ── dcopy_free ────────────────────────────────────────────────────────────────
+// ── dtool_free ────────────────────────────────────────────────────────────────
 
-// dcopy_free releases C-heap memory previously returned by any dcopy_* call.
+// dtool_free releases C-heap memory previously returned by any dtool_* call.
 //
-//export dcopy_free
-func dcopy_free(ptr unsafe.Pointer) {
+//export dtool_free
+func dtool_free(ptr unsafe.Pointer) {
 	C.free(ptr)
 }
 
-// ── dcopy_list_tags ───────────────────────────────────────────────────────────
+// ── dtool_list_tags ───────────────────────────────────────────────────────────
 
-// dcopy_list_tags lists all tags via GET /v2/{name}/tags/list.
+// dtool_list_tags lists all tags via GET /v2/{name}/tags/list.
 //
 // Uses containerd's docker.NewDockerAuthorizer for the full bearer-token cycle.
 //
-//export dcopy_list_tags
-func dcopy_list_tags(
+//export dtool_list_tags
+func dtool_list_tags(
 	cRegistry, cRepository, cUsername, cPassword *C.char,
 	outLen *C.int,
 ) *C.char {
@@ -216,15 +216,15 @@ func listTags(registry, repository, username, password string) ([]string, error)
 	return tagList.Tags, nil
 }
 
-// ── dcopy_fetch_manifest ──────────────────────────────────────────────────────
+// ── dtool_fetch_manifest ──────────────────────────────────────────────────────
 
-// dcopy_fetch_manifest fetches a manifest using containerd's DockerAuthorizer.
+// dtool_fetch_manifest fetches a manifest using containerd's DockerAuthorizer.
 //
 // Sends GET /v2/{name}/manifests/{reference} with the full Accept header list.
 // Uses containerd's bearer-token auth (same code as resolver.Resolve).
 //
-//export dcopy_fetch_manifest
-func dcopy_fetch_manifest(
+//export dtool_fetch_manifest
+func dtool_fetch_manifest(
 	cRegistry, cRepository, cReference, cUsername, cPassword *C.char,
 	outLen *C.int,
 	outContentType **C.char,
@@ -288,14 +288,14 @@ func fetchManifest(registry, repository, reference, username, password string) (
 	return data, ct, dg, nil
 }
 
-// ── dcopy_fetch_blob ──────────────────────────────────────────────────────────
+// ── dtool_fetch_blob ──────────────────────────────────────────────────────────
 
-// dcopy_fetch_blob fetches a blob via GET /v2/{name}/blobs/{digest}.
+// dtool_fetch_blob fetches a blob via GET /v2/{name}/blobs/{digest}.
 //
 // Uses containerd's docker.NewDockerAuthorizer for auth.
 //
-//export dcopy_fetch_blob
-func dcopy_fetch_blob(
+//export dtool_fetch_blob
+func dtool_fetch_blob(
 	cRegistry, cRepository, cDigest, cMediaType, cUsername, cPassword *C.char,
 	outLen *C.int,
 ) *C.char {
@@ -336,14 +336,14 @@ func fetchBlob(registry, repository, dgstStr, _, username, password string) ([]b
 	return io.ReadAll(resp.Body)
 }
 
-// ── dcopy_blob_exists ─────────────────────────────────────────────────────────
+// ── dtool_blob_exists ─────────────────────────────────────────────────────────
 
-// dcopy_blob_exists checks blob existence via HEAD /v2/{name}/blobs/{digest}.
+// dtool_blob_exists checks blob existence via HEAD /v2/{name}/blobs/{digest}.
 //
 // Returns 1=exists, 0=not found, -1=error.
 //
-//export dcopy_blob_exists
-func dcopy_blob_exists(
+//export dtool_blob_exists
+func dtool_blob_exists(
 	cRegistry, cRepository, cDigest, cUsername, cPassword *C.char,
 	outError **C.char,
 ) C.int {
@@ -389,16 +389,16 @@ func blobExists(registry, repository, dgstStr, username, password string) (bool,
 	}
 }
 
-// ── dcopy_push_blob ───────────────────────────────────────────────────────────
+// ── dtool_push_blob ───────────────────────────────────────────────────────────
 
-// dcopy_push_blob pushes a blob using containerd's Pusher interface.
+// dtool_push_blob pushes a blob using containerd's Pusher interface.
 //
 // Delegates to docker.NewResolver → resolver.Pusher → pusher.Push →
 // content.Writer.Commit, which implements the OCI Distribution Spec
 // POST + PUT upload protocol.  ErrAlreadyExists is treated as success.
 //
-//export dcopy_push_blob
-func dcopy_push_blob(
+//export dtool_push_blob
+func dtool_push_blob(
 	cRegistry, cRepository, cDigest, cMediaType, cUsername, cPassword *C.char,
 	data *C.char, dataLen C.int,
 ) *C.char {
@@ -431,7 +431,7 @@ func pushBlob(registry, repository, dgstStr, mediaType, username, password strin
 
 	opts := makeResolver(registry, username, password)
 	resolver := docker.NewResolver(*opts)
-	ref := fmt.Sprintf("%s/%s:dcopy-upload", registry, repository)
+	ref := fmt.Sprintf("%s/%s:dtool-upload", registry, repository)
 
 	pusher, err := resolver.Pusher(ctx, ref)
 	if err != nil {
@@ -460,15 +460,15 @@ func pushBlob(registry, repository, dgstStr, mediaType, username, password strin
 	return nil
 }
 
-// ── dcopy_push_manifest ───────────────────────────────────────────────────────
+// ── dtool_push_manifest ───────────────────────────────────────────────────────
 
-// dcopy_push_manifest pushes a manifest via PUT /v2/{name}/manifests/{reference}.
+// dtool_push_manifest pushes a manifest via PUT /v2/{name}/manifests/{reference}.
 //
 // Uses containerd's docker.NewDockerAuthorizer for auth then a direct PUT
 // request.  This matches containerd's own manifest push path.
 //
-//export dcopy_push_manifest
-func dcopy_push_manifest(
+//export dtool_push_manifest
+func dtool_push_manifest(
 	cRegistry, cRepository, cReference, cMediaType, cUsername, cPassword *C.char,
 	data *C.char, dataLen C.int,
 ) *C.char {
@@ -521,9 +521,9 @@ func pushManifest(registry, repository, reference, mediaType, username, password
 	}
 }
 
-// ── dcopy_daemon_to_oci_dir ───────────────────────────────────────────────────
+// ── dtool_daemon_to_oci_dir ───────────────────────────────────────────────────
 
-// dcopy_daemon_to_oci_dir reads an image from the local Docker daemon via
+// dtool_daemon_to_oci_dir reads an image from the local Docker daemon via
 // /var/run/docker.sock (using the GET /images/{name}/get endpoint which
 // returns a docker-archive tar stream) and writes it as an OCI image layout
 // directory at destPath.
@@ -531,10 +531,10 @@ func pushManifest(registry, repository, reference, mediaType, username, password
 // The OCI index.json is annotated with org.opencontainers.image.ref.name so
 // that bootc/ostree-ext can locate the image by tag (e.g. oci:/path:latest).
 //
-// Returns NULL on success; an "ERROR:…" C string on failure (free with dcopy_free).
+// Returns NULL on success; an "ERROR:…" C string on failure (free with dtool_free).
 //
-//export dcopy_daemon_to_oci_dir
-func dcopy_daemon_to_oci_dir(cImageName, cDestPath *C.char) *C.char {
+//export dtool_daemon_to_oci_dir
+func dtool_daemon_to_oci_dir(cImageName, cDestPath *C.char) *C.char {
 	if err := daemonToOCIDir(gostr(cImageName), gostr(cDestPath)); err != nil {
 		return C.CString(fmt.Sprintf("ERROR:%s", err.Error()))
 	}
@@ -760,9 +760,9 @@ func daemonToOCIDir(imageName, destPath string) error {
 	return nil
 }
 
-// ── dcopy_run_image_proxy ─────────────────────────────────────────────────────
+// ── dtool_run_image_proxy ─────────────────────────────────────────────────────
 
-// dcopy_run_image_proxy implements the containers-image-proxy protocol.
+// dtool_run_image_proxy implements the containers-image-proxy protocol.
 //
 // containers-image-proxy-rs v0.9+ passes the proxy socket as stdin (fd 0)
 // via c.stdin(Stdio::from(theirsock)) using AF_UNIX SOCK_SEQPACKET.
@@ -772,8 +772,8 @@ func daemonToOCIDir(imageName, destPath string) error {
 //   Reply:    {"success":bool,"error":"...","pipeid":N,"value":...}
 //   Blob data and manifests are streamed via pipe fds passed in SCM_RIGHTS.
 //
-//export dcopy_run_image_proxy
-func dcopy_run_image_proxy(cSockFD C.int) *C.char {
+//export dtool_run_image_proxy
+func dtool_run_image_proxy(cSockFD C.int) *C.char {
 	if err := runImageProxy(int(cSockFD)); err != nil {
 		return C.CString(fmt.Sprintf("ERROR:%s", err.Error()))
 	}
@@ -867,10 +867,10 @@ func runImageProxy(sockFD int) error {
 		case "OpenImage", "OpenImageOptional":
 			var ref string
 			json.Unmarshal(arg0(), &ref) //nolint:errcheck
-			fmt.Fprintf(os.Stderr, "[dcopy-proxy] %s: %s\n", req.Method, ref)
+			fmt.Fprintf(os.Stderr, "[dtool-proxy] %s: %s\n", req.Method, ref)
 
 			var dir, tag string
-			if fdStr := os.Getenv("DCOPY_OCI_FD"); fdStr != "" {
+			if fdStr := os.Getenv("DTOOL_OCI_FD"); fdStr != "" {
 				// Access the OCI dir through the parent process's open fd.
 				// bootc changes its mount namespace before spawning us, so
 				// filesystem paths may not resolve.  /proc/$PPID/fd/N is
@@ -880,7 +880,7 @@ func runImageProxy(sockFD int) error {
 				if tag == "" {
 					tag = "latest"
 				}
-			} else if cacheDir := os.Getenv("DCOPY_OCI_DIR"); cacheDir != "" {
+			} else if cacheDir := os.Getenv("DTOOL_OCI_DIR"); cacheDir != "" {
 				dir = cacheDir
 				_, tag = parseOCIRef(ref)
 				if tag == "" {
@@ -892,7 +892,7 @@ func runImageProxy(sockFD int) error {
 
 			mdata, mdigest, err := readOCIManifest(dir, tag)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "[dcopy-proxy] %s error: %v\n", req.Method, err)
+				fmt.Fprintf(os.Stderr, "[dtool-proxy] %s error: %v\n", req.Method, err)
 				if req.Method == "OpenImageOptional" {
 					sendOK(uint32(0), 0) // 0 = not found
 				} else {
@@ -1067,7 +1067,7 @@ func runImageProxy(sockFD int) error {
 			return nil
 
 		default:
-			fmt.Fprintf(os.Stderr, "[dcopy-proxy] unknown method: %s\n", req.Method)
+			fmt.Fprintf(os.Stderr, "[dtool-proxy] unknown method: %s\n", req.Method)
 			sendErr(fmt.Sprintf("unknown method: %s", req.Method))
 		}
 	}

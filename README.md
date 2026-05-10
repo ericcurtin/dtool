@@ -1,4 +1,4 @@
-# dcopy
+# dtool
 
 A container image copy utility, modelled on [containerd](https://github.com/containerd/containerd)'s architecture.
 
@@ -16,38 +16,38 @@ A container image copy utility, modelled on [containerd](https://github.com/cont
 ### Copy an image
 
 ```bash
-dcopy copy docker://ubuntu:22.04 docker://myregistry.io/ubuntu:22.04
+dtool copy docker://ubuntu:22.04 docker://myregistry.io/ubuntu:22.04
 ```
 
 Copy all platforms from a manifest index:
 
 ```bash
-dcopy copy --all docker://ubuntu:22.04 docker://myregistry.io/ubuntu:22.04
+dtool copy --all docker://ubuntu:22.04 docker://myregistry.io/ubuntu:22.04
 ```
 
 Copy a specific platform:
 
 ```bash
-dcopy copy --platform linux/arm64 docker://ubuntu:22.04 docker://myregistry.io/ubuntu:22.04
+dtool copy --platform linux/arm64 docker://ubuntu:22.04 docker://myregistry.io/ubuntu:22.04
 ```
 
 ### Inspect image metadata
 
 ```bash
-dcopy inspect docker://ubuntu:22.04
+dtool inspect docker://ubuntu:22.04
 ```
 
 Print raw manifest or config JSON:
 
 ```bash
-dcopy inspect --raw docker://ubuntu:22.04
-dcopy inspect --config docker://ubuntu:22.04
+dtool inspect --raw docker://ubuntu:22.04
+dtool inspect --config docker://ubuntu:22.04
 ```
 
 ### List tags
 
 ```bash
-dcopy list-tags docker://ubuntu
+dtool list-tags docker://ubuntu
 ```
 
 ## Reference Format
@@ -70,11 +70,11 @@ Credentials are resolved in this order:
 
 ## Architecture
 
-`dcopy` mirrors containerd's architecture in Rust:
+`dtool` mirrors containerd's architecture in Rust:
 
 - `Resolver`, `Fetcher`, and `Pusher` traits map to containerd's `core/remotes/` interfaces
 - `Descriptor`, `Manifest`, `Index` model OCI and Docker Schema 2 wire formats
 - Platform matching follows the same rules as `github.com/containerd/platforms`
 
-The registry HTTP client is implemented in Go (`go/libdcopy.go`) using containerd's `core/remotes/docker` package and compiled into a static C archive (`libdcopy_go.a`) that is linked into the Rust binary at build time.
+The registry HTTP client is implemented in Go (`go/libdtool.go`) using containerd's `core/remotes/docker` package and compiled into a static C archive (`libdtool_go.a`) that is linked into the Rust binary at build time.
 

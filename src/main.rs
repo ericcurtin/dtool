@@ -1,4 +1,4 @@
-/// dcopy — container image copy utility
+/// dtool — container image copy utility
 ///
 /// Written in Rust.  The internal architecture mirrors
 /// containerd's core/remotes/ and core/images/ packages.
@@ -25,7 +25,7 @@ use ffi::{go_daemon_to_oci_dir, go_run_image_proxy};
 
 // ── CLI definition ────────────────────────────────────────────────────────────
 
-/// dcopy: copy container images between registries and local formats.
+/// dtool: copy container images between registries and local formats.
 ///
 /// References use the format TRANSPORT:REFERENCE, e.g.:
 ///   docker://registry.io/image:tag
@@ -33,7 +33,7 @@ use ffi::{go_daemon_to_oci_dir, go_run_image_proxy};
 ///   docker-archive:/path/to/archive.tar
 #[derive(Parser)]
 #[command(
-    name = "dcopy",
+    name = "dtool",
     version,
     about = "Copy container images between registries and local formats",
     long_about = None,
@@ -41,10 +41,10 @@ use ffi::{go_daemon_to_oci_dir, go_run_image_proxy};
 struct Cli {
     /// Set log level (error, warn, info, debug, trace).
     /// Can also be set via RUST_LOG.
-    #[arg(long, global = true, default_value = "warn", env = "DCOPY_LOG")]
+    #[arg(long, global = true, default_value = "warn", env = "DTOOL_LOG")]
     log_level: String,
 
-    // Podman-compatible global flags (accepted when dcopy is called as "podman")
+    // Podman-compatible global flags (accepted when dtool is called as "podman")
     /// Container storage root (podman --root)
     #[arg(long, global = true, default_value = "")]
     root: String,
@@ -121,7 +121,7 @@ enum Commands {
 
     /// Implement the containers-image-proxy wire protocol on an already-open
     /// Unix socket.  This is the same protocol as
-    /// `skopeo experimental-image-proxy --sockfd N` so that dcopy can be
+    /// `skopeo experimental-image-proxy --sockfd N` so that dtool can be
     /// hardlinked as /usr/bin/skopeo and used transparently by bootc.
     ExperimentalImageProxy {
         /// File-descriptor number of the already-open Unix socket.
@@ -141,7 +141,7 @@ enum Commands {
     /// Minimal podman-compatible interface for bootc's imgstorage management.
     ///
     /// bootc 1.15.x calls `podman --root PATH images` to initialize its image
-    /// storage and `podman pull` to import the source image.  dcopy is hardlinked
+    /// storage and `podman pull` to import the source image.  dtool is hardlinked
     /// as /usr/bin/podman and implements just enough to satisfy bootc.
     Images {
         /// Output format (ignored)
@@ -171,7 +171,7 @@ enum Commands {
     /// that tools like bootc can reference the image with oci:DEST:TAG.
     ///
     /// Example:
-    ///   dcopy save-oci myimage:latest /output/.oci-dir
+    ///   dtool save-oci myimage:latest /output/.oci-dir
     SaveOci {
         /// Image name as understood by the Docker daemon (e.g. myimage:latest)
         image: String,
@@ -251,13 +251,13 @@ async fn dispatch(cmd: Commands, _root: &str) -> error::Result<()> {
         // if empty the storage is uninitialized and bootc will populate it.
         Commands::Images { .. } => {
             // Return exit 0 with empty output: storage accessible, no images cached.
-            eprintln!("[dcopy-podman] images: storage check OK (empty)");
+            eprintln!("[dtool-podman] images: storage check OK (empty)");
             Ok(())
         }
 
         Commands::Pull { image, extra, .. } => {
-            let oci_dir = std::env::var("DCOPY_OCI_DIR").unwrap_or_default();
-            eprintln!("[dcopy-podman] pull: {image} extra={extra:?} oci_dir={oci_dir}");
+            let oci_dir = std::env::var("DTOOL_OCI_DIR").unwrap_or_default();
+            eprintln!("[dtool-podman] pull: {image} extra={extra:?} oci_dir={oci_dir}");
             // Return success; bootc may use Rust-native import for the actual data.
             Ok(())
         }
@@ -301,7 +301,7 @@ async fn dispatch(cmd: Commands, _root: &str) -> error::Result<()> {
 fn find_inherited_socket_fd() -> Result<i32, String> {
     match unsafe { libc_getsockopt_so_type(0) } {
         Ok(t) => {
-            eprintln!("[dcopy-proxy] proxy socket at fd 0 (stdin) sock_type={t}");
+            eprintln!("[dtool-proxy] proxy socket at fd 0 (stdin) sock_type={t}");
             Ok(0)
         }
         Err(_) => Err("fd 0 (stdin) is not a socket — expected SEQPACKET proxy socket".to_string()),
