@@ -3,13 +3,23 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
     branches: [main]
 
 jobs:
-  build-and-test:
-    name: Build and Test
-    runs-on: ubuntu-latest
+  build:
+    name: Build ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - uses: actions/checkout@v4
@@ -30,12 +40,59 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-${{ matrix.arch }}-cargo-
 
       - name: Run tests
         run: cargo test --locked
 
       - name: Build release binary
         run: cargo build --release --locked
+
+      - name: Stage binary
+        run: cp target/release/dtool dtool-${{ matrix.arch }}-linux
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dtool-${{ matrix.arch }}-linux
+          path: dtool-${{ matrix.arch }}-linux
+
+  release:
+    name: Create Release
+    # Run on every push to main (rolling "latest" pre-release) and on every
+    # version tag (proper versioned release).  Skip on PRs.
+    if: >-
+      github.event_name == 'push' && (
+        github.ref == 'refs/heads/main' ||
+        github.ref_type == 'tag'
+      )
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dtool-*
+          merge-multiple: true
+          path: dist/
+
+      - name: List release assets
+        run: ls -lh dist/
+
+      # On a version tag (e.g. v1.2.3): create a proper numbered release.
+      # On every other push to main: overwrite the rolling "latest" pre-release
+      # so the most recent build is always available without manual tagging.
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name:   ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
+          name:       ${{ github.ref_type == 'tag' && github.ref_name || 'Latest build' }}
+          prerelease: ${{ github.ref_type != 'tag' }}
+          draft:      false
+          generate_release_notes: ${{ github.ref_type == 'tag' }}
+          files: dist/*
