@@ -969,25 +969,23 @@ func runImageProxy(sockFD int) error {
 				continue
 			}
 			blobPath := blobFilePath(img.ociDir, digest)
-			fmt.Fprintf(os.Stderr, "[dcopy-proxy] GetBlob ociDir=%s digest=%s blobPath=%s\n",
-				img.ociDir, digest, blobPath)
-			// List a few blobs in the dir to diagnose missing files
-			if blobDirPath := filepath.Join(img.ociDir, "blobs", "sha256"); true {
-				if entries, dirErr := os.ReadDir(blobDirPath); dirErr == nil {
-					fmt.Fprintf(os.Stderr, "[dcopy-proxy] blobs/sha256 has %d files\n", len(entries))
-					if len(entries) > 0 {
-						fmt.Fprintf(os.Stderr, "[dcopy-proxy]   first: %s\n", entries[0].Name())
-						if len(entries) > 1 {
-							fmt.Fprintf(os.Stderr, "[dcopy-proxy]   last:  %s\n", entries[len(entries)-1].Name())
-						}
-					}
-				} else {
-					fmt.Fprintf(os.Stderr, "[dcopy-proxy] cannot read blobs/sha256: %v\n", dirErr)
-				}
-			}
 			fi, err := os.Stat(blobPath)
 			if err != nil {
-				sendErr(err.Error())
+				// Include diagnostic info in the error so it appears in bootc output.
+				diag := fmt.Sprintf("stat(%s): %v", blobPath, err)
+				blobDir := filepath.Join(img.ociDir, "blobs", "sha256")
+				if entries, rderr := os.ReadDir(blobDir); rderr == nil {
+					diag += fmt.Sprintf("; blobs/sha256 has %d files", len(entries))
+					if len(entries) > 0 {
+						diag += fmt.Sprintf("; first=%s", entries[0].Name())
+					}
+					if len(entries) > 1 {
+						diag += fmt.Sprintf("; last=%s", entries[len(entries)-1].Name())
+					}
+				} else {
+					diag += fmt.Sprintf("; readdir(%s): %v", blobDir, rderr)
+				}
+				sendErr(diag)
 				continue
 			}
 			r, w, err := os.Pipe()
