@@ -866,7 +866,17 @@ func runImageProxy(sockFD int) error {
 			fmt.Fprintf(os.Stderr, "[dcopy-proxy] %s: %s\n", req.Method, ref)
 
 			var dir, tag string
-			if cacheDir := os.Getenv("DCOPY_OCI_DIR"); cacheDir != "" {
+			if fdStr := os.Getenv("DCOPY_OCI_FD"); fdStr != "" {
+				// Access the OCI dir through the parent process's open fd.
+				// bootc changes its mount namespace before spawning us, so
+				// filesystem paths may not resolve.  /proc/$PPID/fd/N is
+				// process-scoped (not namespace-scoped) and always works.
+				dir = fmt.Sprintf("/proc/%d/fd/%s", os.Getppid(), fdStr)
+				_, tag = parseOCIRef(ref)
+				if tag == "" {
+					tag = "latest"
+				}
+			} else if cacheDir := os.Getenv("DCOPY_OCI_DIR"); cacheDir != "" {
 				dir = cacheDir
 				_, tag = parseOCIRef(ref)
 				if tag == "" {
