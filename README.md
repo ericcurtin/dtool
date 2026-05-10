@@ -1,6 +1,6 @@
 # dtool
 
-A container image copy utility, modelled on [containerd](https://github.com/containerd/containerd)'s architecture.
+A Docker tool, modelled on [containerd](https://github.com/containerd/containerd)'s architecture.
 
 ## Features
 
