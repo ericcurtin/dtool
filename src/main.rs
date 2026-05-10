@@ -296,12 +296,12 @@ async fn dispatch(cmd: Commands, _root: &str) -> error::Result<()> {
 /// Scan /proc/self/fd for the inherited proxy Unix socket fd (> 2).
 ///
 /// containers-image-proxy-rs v0.9+ passes the proxy socket via fd
-/// inheritance (CommandExt::fd) without a --sockfd argument.
-/// The Go runtime (initialised before Rust main) creates its own socket
-/// pairs at the lowest available fd numbers.  The inherited proxy socket
-/// sits at a higher number because the parent process already had many
-/// fds open when it created the proxy socket pair.
-/// Strategy: collect all Unix sockets, return the one with the highest fd.
+/// inheritance without a --sockfd argument.  The proxy sends the
+/// "Initialize" request immediately after spawning us, so the inherited
+/// fd is the only socket that has pending data (POLLIN) when we start.
+/// We poll all candidate sockets simultaneously and return the first
+/// one that has data, falling back to the highest fd if none has data
+/// yet (e.g. very fast startup).
 fn find_inherited_socket_fd() -> Result<i32, String> {
     use std::fs;
 
@@ -319,20 +319,49 @@ fn find_inherited_socket_fd() -> Result<i32, String> {
     for fd in &candidates {
         let flags = unsafe { libc::fcntl(*fd, libc::F_GETFD) };
         let has_cloexec = flags != -1 && (flags & libc::FD_CLOEXEC) != 0;
+        let link = std::fs::read_link(format!("/proc/self/fd/{fd}"))
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "?".to_string());
         match unsafe { libc_getsockopt_so_type(*fd) } {
             Ok(sock_type) => {
-                eprintln!("[dcopy-proxy] fd {} is_socket=true sock_type={} cloexec={}",
-                    fd, sock_type, has_cloexec);
+                eprintln!("[dcopy-proxy] fd {fd} is_socket=true sock_type={sock_type} cloexec={has_cloexec} link={link}");
                 sockets.push(*fd);
             }
             Err(_) => {
-                eprintln!("[dcopy-proxy] fd {} is_socket=false cloexec={}", fd, has_cloexec);
+                eprintln!("[dcopy-proxy] fd {fd} is_socket=false cloexec={has_cloexec} link={link}");
             }
         }
     }
-    // Highest fd = inherited proxy socket; lowest fds = Go runtime internals.
-    sockets.into_iter().last()
-        .ok_or_else(|| "no Unix socket found in /proc/self/fd".to_string())
+
+    if sockets.is_empty() {
+        return Err("no Unix socket found in /proc/self/fd".to_string());
+    }
+
+    // Poll all sockets simultaneously.  containers-image-proxy-rs sends the
+    // Initialize request immediately after spawning us; by the time we reach
+    // this point the message should be in the socket buffer.  Use a 500 ms
+    // timeout so we give it plenty of time to arrive even on slow machines.
+    let mut pollfds: Vec<libc::pollfd> = sockets.iter()
+        .map(|&fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 })
+        .collect();
+    let nready = unsafe {
+        libc::poll(pollfds.as_mut_ptr(), pollfds.len() as libc::nfds_t, 500)
+    };
+    eprintln!("[dcopy-proxy] poll(500ms) nready={nready}");
+    if nready > 0 {
+        for (i, pfd) in pollfds.iter().enumerate() {
+            eprintln!("[dcopy-proxy] fd {} revents={:#x}", pfd.fd, pfd.revents);
+            if (pfd.revents & libc::POLLIN) != 0 {
+                eprintln!("[dcopy-proxy] selecting fd {} (has pending data)", sockets[i]);
+                return Ok(sockets[i]);
+            }
+        }
+    }
+
+    // Fallback: highest-numbered socket (Go runtime allocates at lowest fds).
+    let best = *sockets.last().unwrap();
+    eprintln!("[dcopy-proxy] no socket has pending data; using highest fd {best} as fallback");
+    Ok(best)
 }
 
 /// Get the socket type (SO_TYPE) of fd, or an error if fd is not a socket.
