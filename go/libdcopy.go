@@ -971,19 +971,17 @@ func runImageProxy(sockFD int) error {
 			blobPath := blobFilePath(img.ociDir, digest)
 			fi, err := os.Stat(blobPath)
 			if err != nil {
-				// Include diagnostic info in the error so it appears in bootc output.
-				diag := fmt.Sprintf("stat(%s): %v", blobPath, err)
+				// Include all blob names in the error so we can diagnose the mismatch.
+				diag := fmt.Sprintf("missing=%s ociDir=%s", strings.TrimPrefix(digest, "sha256:"), img.ociDir)
 				blobDir := filepath.Join(img.ociDir, "blobs", "sha256")
 				if entries, rderr := os.ReadDir(blobDir); rderr == nil {
-					diag += fmt.Sprintf("; blobs/sha256 has %d files", len(entries))
-					if len(entries) > 0 {
-						diag += fmt.Sprintf("; first=%s", entries[0].Name())
+					names := make([]string, 0, len(entries))
+					for _, e := range entries {
+						names = append(names, e.Name()[:8]) // first 8 chars
 					}
-					if len(entries) > 1 {
-						diag += fmt.Sprintf("; last=%s", entries[len(entries)-1].Name())
-					}
+					diag += fmt.Sprintf(" present=%v", names)
 				} else {
-					diag += fmt.Sprintf("; readdir(%s): %v", blobDir, rderr)
+					diag += fmt.Sprintf(" readdir_err=%v", rderr)
 				}
 				sendErr(diag)
 				continue
