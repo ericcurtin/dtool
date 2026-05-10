@@ -303,7 +303,6 @@ async fn dispatch(cmd: Commands, _root: &str) -> error::Result<()> {
 /// candidate fd with getsockopt(SO_DOMAIN).
 fn find_inherited_socket_fd() -> Result<i32, String> {
     use std::fs;
-    use std::os::unix::io::FromRawFd;
 
     let entries = fs::read_dir("/proc/self/fd")
         .map_err(|e| format!("read /proc/self/fd: {e}"))?;
@@ -315,24 +314,23 @@ fn find_inherited_socket_fd() -> Result<i32, String> {
         .collect();
     candidates.sort_unstable();
 
-    let mut sockets = Vec::new();
     for fd in &candidates {
-        let result = unsafe { libc_getsockopt_so_type(*fd) };
-        eprintln!("[dcopy-proxy] fd {} is_socket={}", fd, result.is_ok());
-        if result.is_ok() {
-            sockets.push(*fd);
+        match unsafe { libc_getsockopt_so_type(*fd) } {
+            Ok(sock_type) => {
+                eprintln!("[dcopy-proxy] fd {} sock_type={} seqpacket={}",
+                    fd, sock_type, sock_type == libc::SOCK_SEQPACKET);
+                if sock_type == libc::SOCK_SEQPACKET {
+                    return Ok(*fd);
+                }
+            }
+            Err(_) => {} // not a socket
         }
     }
-    // The inherited socket from containers-image-proxy is the FIRST socket
-    // opened before our Go runtime starts (which creates its own sockets).
-    // Use the lowest-numbered socket fd.
-    sockets.into_iter().next()
-        .ok_or_else(|| "no inherited Unix socket found".to_string())
+    Err("no inherited SEQPACKET Unix socket found".to_string())
 }
 
-/// Check if fd is a socket using getsockopt(SO_TYPE).
-/// Returns Ok(()) if fd is a socket, Err otherwise.
-unsafe fn libc_getsockopt_so_type(fd: i32) -> Result<(), String> {
+/// Get the socket type (SO_TYPE) of fd, or an error if fd is not a socket.
+unsafe fn libc_getsockopt_so_type(fd: i32) -> Result<libc::c_int, String> {
     use std::mem;
     let mut optval: libc::c_int = 0;
     let mut optlen = mem::size_of::<libc::c_int>() as libc::socklen_t;
@@ -343,7 +341,7 @@ unsafe fn libc_getsockopt_so_type(fd: i32) -> Result<(), String> {
         &mut optval as *mut _ as *mut libc::c_void,
         &mut optlen,
     );
-    if ret == 0 { Ok(()) } else { Err("not a socket".to_string()) }
+    if ret == 0 { Ok(optval) } else { Err("not a socket".to_string()) }
 }
 
 /// Parse `user:password` credential strings.
