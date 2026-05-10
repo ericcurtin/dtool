@@ -856,9 +856,9 @@ func runImageProxy(sockFD int) error {
 		switch req.Method {
 
 		case "Initialize":
-			// Return the base protocol version; containers-image-proxy-rs
-			// requires >=0.2.3, <0.3.0 per semver::VersionReq::parse("0.2.3").
-			sendOK("0.2.3", 0)
+			// Return 0.2.5: satisfies ^0.2.3 (base) AND ^0.2.5 (GetLayerInfo).
+			// GetLayerInfo is required by ostree-ext for docker-daemon: transport.
+			sendOK("0.2.5", 0)
 
 		case "OpenImage", "OpenImageOptional":
 			var ref string
@@ -1020,6 +1020,21 @@ func runImageProxy(sockFD int) error {
 			dataR.Close()
 			errR.Close()
 
+		case "GetLayerInfo":
+			var h uint32
+			json.Unmarshal(arg0(), &h) //nolint:errcheck
+			img := handles[h]
+			if img == nil {
+				sendErr("invalid handle")
+				continue
+			}
+			info, err := buildLayerInfoList(img.ociDir, img.manifestData)
+			if err != nil {
+				sendErr(err.Error())
+				continue
+			}
+			sendOK(info, 0)
+
 		case "FinishPipe":
 			var pid uint32
 			json.Unmarshal(arg0(), &pid) //nolint:errcheck
@@ -1044,6 +1059,49 @@ func runImageProxy(sockFD int) error {
 			sendErr(fmt.Sprintf("unknown method: %s", req.Method))
 		}
 	}
+}
+
+// layerInfoEntry is the wire type for GetLayerInfo response entries.
+type layerInfoEntry struct {
+	Digest             string `json:"digest"`
+	UncompressedSha256 string `json:"uncompressed_sha256"`
+}
+
+// buildLayerInfoList reads the manifest and config to produce per-layer info.
+// ostree-ext requires this for docker-daemon: transport (version ≥ 0.2.5).
+func buildLayerInfoList(ociDir string, manifestData []byte) ([]layerInfoEntry, error) {
+	var manifest struct {
+		Layers []struct {
+			Digest string `json:"digest"`
+		} `json:"layers"`
+		Config struct {
+			Digest string `json:"digest"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		return nil, fmt.Errorf("parse manifest: %w", err)
+	}
+	cfgData, err := os.ReadFile(blobFilePath(ociDir, manifest.Config.Digest))
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+	var cfg struct {
+		RootFS struct {
+			DiffIDs []string `json:"diff_ids"`
+		} `json:"rootfs"`
+	}
+	if err := json.Unmarshal(cfgData, &cfg); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	result := make([]layerInfoEntry, len(manifest.Layers))
+	for i, layer := range manifest.Layers {
+		var diffID string
+		if i < len(cfg.RootFS.DiffIDs) {
+			diffID = strings.TrimPrefix(cfg.RootFS.DiffIDs[i], "sha256:")
+		}
+		result[i] = layerInfoEntry{Digest: layer.Digest, UncompressedSha256: diffID}
+	}
+	return result, nil
 }
 
 // blobFilePath returns the path to a blob in an OCI layout directory.
