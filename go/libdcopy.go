@@ -977,22 +977,17 @@ func runImageProxy(sockFD int) error {
 				sendErr("invalid handle")
 				continue
 			}
-			blobPath := blobFilePath(img.ociDir, digest)
+			// GetBlob is called with the diff_id (uncompressed SHA256) from
+			// ConvertedLayerInfo.digest, not the compressed OCI blob digest.
+			// Map diff_id → compressed digest via manifest + config.
+			blobDigest := diffIDToCompressed(img.ociDir, img.manifestData, digest)
+			if blobDigest == "" {
+				blobDigest = digest // fallback: treat as compressed digest
+			}
+			blobPath := blobFilePath(img.ociDir, blobDigest)
 			fi, err := os.Stat(blobPath)
 			if err != nil {
-				// Include all blob names in the error so we can diagnose the mismatch.
-				diag := fmt.Sprintf("missing=%s ociDir=%s", strings.TrimPrefix(digest, "sha256:"), img.ociDir)
-				blobDir := filepath.Join(img.ociDir, "blobs", "sha256")
-				if entries, rderr := os.ReadDir(blobDir); rderr == nil {
-					names := make([]string, 0, len(entries))
-					for _, e := range entries {
-						names = append(names, e.Name()[:8]) // first 8 chars
-					}
-					diag += fmt.Sprintf(" present=%v", names)
-				} else {
-					diag += fmt.Sprintf(" readdir_err=%v", rderr)
-				}
-				sendErr(diag)
+				sendErr(fmt.Sprintf("GetBlob: %v (diffId=%s compressed=%s)", err, digest, blobDigest))
 				continue
 			}
 			r, w, err := os.Pipe()
@@ -1143,6 +1138,41 @@ func buildLayerInfoList(ociDir string, manifestData []byte) ([]layerInfoEntry, e
 		}
 	}
 	return result, nil
+}
+
+// diffIDToCompressed maps an uncompressed layer diff_id to the corresponding
+// compressed blob digest in the OCI layout, using the manifest and config.
+// Returns "" if the diff_id is not found or an error occurs.
+func diffIDToCompressed(ociDir string, manifestData []byte, diffID string) string {
+	var manifest struct {
+		Layers []struct {
+			Digest string `json:"digest"`
+		} `json:"layers"`
+		Config struct {
+			Digest string `json:"digest"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		return ""
+	}
+	cfgData, err := os.ReadFile(blobFilePath(ociDir, manifest.Config.Digest))
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		RootFS struct {
+			DiffIDs []string `json:"diff_ids"`
+		} `json:"rootfs"`
+	}
+	if err := json.Unmarshal(cfgData, &cfg); err != nil {
+		return ""
+	}
+	for i, did := range cfg.RootFS.DiffIDs {
+		if did == diffID && i < len(manifest.Layers) {
+			return manifest.Layers[i].Digest
+		}
+	}
+	return ""
 }
 
 // blobFilePath returns the path to a blob in an OCI layout directory.
