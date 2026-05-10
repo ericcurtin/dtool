@@ -297,9 +297,11 @@ async fn dispatch(cmd: Commands, _root: &str) -> error::Result<()> {
 ///
 /// containers-image-proxy-rs v0.9+ passes the proxy socket via fd
 /// inheritance (CommandExt::fd) without a --sockfd argument.
-/// CommandExt::fd explicitly clears FD_CLOEXEC on the inherited fd,
-/// while Go runtime sockets are created with SOCK_CLOEXEC.
-/// The inherited proxy socket is therefore the only socket without CLOEXEC.
+/// The Go runtime (initialised before Rust main) creates its own socket
+/// pairs at the lowest available fd numbers.  The inherited proxy socket
+/// sits at a higher number because the parent process already had many
+/// fds open when it created the proxy socket pair.
+/// Strategy: collect all Unix sockets, return the one with the highest fd.
 fn find_inherited_socket_fd() -> Result<i32, String> {
     use std::fs;
 
@@ -313,22 +315,24 @@ fn find_inherited_socket_fd() -> Result<i32, String> {
         .collect();
     candidates.sort_unstable();
 
+    let mut sockets: Vec<i32> = Vec::new();
     for fd in &candidates {
-        let sock_type = match unsafe { libc_getsockopt_so_type(*fd) } {
-            Ok(t) => t,
-            Err(_) => continue, // not a socket
-        };
-        // CommandExt::fd clears FD_CLOEXEC on the inherited fd.
-        // Go runtime sockets are created with SOCK_CLOEXEC and keep the flag.
-        // So the inherited proxy socket is the only socket without CLOEXEC.
         let flags = unsafe { libc::fcntl(*fd, libc::F_GETFD) };
         let has_cloexec = flags != -1 && (flags & libc::FD_CLOEXEC) != 0;
-        eprintln!("[dcopy-proxy] fd {} sock_type={} cloexec={}", fd, sock_type, has_cloexec);
-        if !has_cloexec {
-            return Ok(*fd);
+        match unsafe { libc_getsockopt_so_type(*fd) } {
+            Ok(sock_type) => {
+                eprintln!("[dcopy-proxy] fd {} is_socket=true sock_type={} cloexec={}",
+                    fd, sock_type, has_cloexec);
+                sockets.push(*fd);
+            }
+            Err(_) => {
+                eprintln!("[dcopy-proxy] fd {} is_socket=false cloexec={}", fd, has_cloexec);
+            }
         }
     }
-    Err("no inherited Unix socket found (no non-CLOEXEC socket)".to_string())
+    // Highest fd = inherited proxy socket; lowest fds = Go runtime internals.
+    sockets.into_iter().last()
+        .ok_or_else(|| "no Unix socket found in /proc/self/fd".to_string())
 }
 
 /// Get the socket type (SO_TYPE) of fd, or an error if fd is not a socket.
