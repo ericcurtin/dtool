@@ -44,6 +44,15 @@ struct Cli {
     #[arg(long, global = true, default_value = "warn", env = "DCOPY_LOG")]
     log_level: String,
 
+    // Podman-compatible global flags (accepted when dcopy is called as "podman")
+    /// Container storage root (podman --root)
+    #[arg(long, global = true, default_value = "")]
+    root: String,
+
+    /// Container storage run-root (podman --runroot)
+    #[arg(long, global = true, default_value = "")]
+    runroot: String,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -126,13 +135,7 @@ enum Commands {
     /// storage and `podman pull` to import the source image.  dcopy is hardlinked
     /// as /usr/bin/podman and implements just enough to satisfy bootc.
     Images {
-        /// Storage root (passed by bootc as --root)
-        #[arg(long, default_value = "")]
-        root: String,
-        /// Run root (passed by bootc as --runroot)
-        #[arg(long, default_value = "")]
-        runroot: String,
-        /// Output format (ignored, we always output nothing)
+        /// Output format (ignored)
         #[arg(long, default_value = "")]
         format: String,
         /// Extra filters / flags (accepted but ignored)
@@ -144,12 +147,6 @@ enum Commands {
     Pull {
         /// Image reference (e.g. docker-daemon:image:tag)
         image: String,
-        /// Storage root
-        #[arg(long, default_value = "")]
-        root: String,
-        /// Run root
-        #[arg(long, default_value = "")]
-        runroot: String,
         /// Extra flags (accepted but ignored)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         extra: Vec<String>,
@@ -189,7 +186,7 @@ async fn main() {
         .with_writer(std::io::stderr)
         .init();
 
-    let result = dispatch(cli.command).await;
+    let result = dispatch(cli.command, &cli.root).await;
 
     if let Err(e) = result {
         eprintln!("error: {e}");
@@ -197,7 +194,7 @@ async fn main() {
     }
 }
 
-async fn dispatch(cmd: Commands) -> error::Result<()> {
+async fn dispatch(cmd: Commands, _root: &str) -> error::Result<()> {
     match cmd {
         Commands::Copy {
             source,
@@ -244,17 +241,15 @@ async fn dispatch(cmd: Commands) -> error::Result<()> {
         // bootc calls "podman images" to check the storage is accessible;
         // if empty the storage is uninitialized and bootc will populate it.
         Commands::Images { .. } => {
-            // Return exit 0 with empty output: storage is accessible, no images yet.
+            // Return exit 0 with empty output: storage accessible, no images cached.
+            eprintln!("[dcopy-podman] images: storage check OK (empty)");
             Ok(())
         }
 
-        Commands::Pull { image, root, .. } => {
-            // For bootc's imgstorage: import source image into containers-storage.
-            // We delegate to save-oci writing to --root so containers-storage
-            // can find it as an OCI layout.
+        Commands::Pull { image, extra, .. } => {
             let oci_dir = std::env::var("DCOPY_OCI_DIR").unwrap_or_default();
-            eprintln!("[dcopy-podman] pull: {image} -> root={root} oci_dir={oci_dir}");
-            // Just succeed — bootc may use Rust-native code to actually import.
+            eprintln!("[dcopy-podman] pull: {image} extra={extra:?} oci_dir={oci_dir}");
+            // Return success; bootc may use Rust-native import for the actual data.
             Ok(())
         }
 
