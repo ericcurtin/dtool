@@ -1062,9 +1062,14 @@ func runImageProxy(sockFD int) error {
 }
 
 // layerInfoEntry is the wire type for GetLayerInfo response entries.
+// Fields match containers-image-proxy-rs ConvertedLayerInfo:
+//   digest     = uncompressed diff ID from config.rootfs.diff_ids (sha256:...)
+//   size       = compressed blob size from manifest.layers[i].size
+//   media_type = compressed blob media type from manifest.layers[i].mediaType
 type layerInfoEntry struct {
-	Digest             string `json:"digest"`
-	UncompressedSha256 string `json:"uncompressed_sha256"`
+	Digest    string `json:"digest"`
+	Size      int64  `json:"size"`
+	MediaType string `json:"media_type"`
 }
 
 // buildLayerInfoList reads the manifest and config to produce per-layer info.
@@ -1072,7 +1077,9 @@ type layerInfoEntry struct {
 func buildLayerInfoList(ociDir string, manifestData []byte) ([]layerInfoEntry, error) {
 	var manifest struct {
 		Layers []struct {
-			Digest string `json:"digest"`
+			Digest    string `json:"digest"`
+			Size      int64  `json:"size"`
+			MediaType string `json:"mediaType"`
 		} `json:"layers"`
 		Config struct {
 			Digest string `json:"digest"`
@@ -1097,9 +1104,13 @@ func buildLayerInfoList(ociDir string, manifestData []byte) ([]layerInfoEntry, e
 	for i, layer := range manifest.Layers {
 		var diffID string
 		if i < len(cfg.RootFS.DiffIDs) {
-			diffID = strings.TrimPrefix(cfg.RootFS.DiffIDs[i], "sha256:")
+			diffID = cfg.RootFS.DiffIDs[i] // "sha256:uncompressed_hex"
 		}
-		result[i] = layerInfoEntry{Digest: layer.Digest, UncompressedSha256: diffID}
+		result[i] = layerInfoEntry{
+			Digest:    diffID,
+			Size:      layer.Size,
+			MediaType: layer.MediaType,
+		}
 	}
 	return result, nil
 }
