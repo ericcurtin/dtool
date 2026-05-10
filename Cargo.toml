@@ -56,3 +56,6 @@ async-trait = "0.1"
 
 # Byte buffers
 bytes = "1"
+
+# Unix syscalls for socket detection
+libc = "0.2"

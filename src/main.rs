@@ -125,8 +125,11 @@ enum Commands {
     /// hardlinked as /usr/bin/skopeo and used transparently by bootc.
     ExperimentalImageProxy {
         /// File-descriptor number of the already-open Unix socket.
+        /// Optional: when omitted the proxy scans /proc/self/fd for an
+        /// inherited Unix socket (containers-image-proxy-rs passes it via
+        /// fd inheritance without --sockfd in newer versions).
         #[arg(long = "sockfd")]
-        sockfd: i32,
+        sockfd: Option<i32>,
         /// Disable authentication (accepted but ignored).
         #[arg(long = "no-creds")]
         no_creds: bool,
@@ -260,7 +263,20 @@ async fn dispatch(cmd: Commands, _root: &str) -> error::Result<()> {
         }
 
         Commands::ExperimentalImageProxy { sockfd, .. } => {
-            go_run_image_proxy(sockfd).map_err(|e| {
+            let fd = match sockfd {
+                Some(n) => n,
+                None => {
+                    // containers-image-proxy-rs passes the socket via fd
+                    // inheritance without --sockfd; find the first inherited
+                    // Unix socket fd (above stdin/stdout/stderr).
+                    find_inherited_socket_fd().map_err(|e| {
+                        crate::error::Error::Other(format!(
+                            "experimental-image-proxy: no socket found: {e}"
+                        ))
+                    })?
+                }
+            };
+            go_run_image_proxy(fd).map_err(|e| {
                 crate::error::Error::Other(format!("experimental-image-proxy: {e}"))
             })
         }
@@ -275,6 +291,54 @@ async fn dispatch(cmd: Commands, _root: &str) -> error::Result<()> {
             })
         }
     }
+}
+
+/// Scan /proc/self/fd for an inherited Unix socket fd (> 2).
+///
+/// containers-image-proxy-rs v0.9+ passes the proxy socket via fd
+/// inheritance (CommandExt::fd) without a --sockfd argument.  This
+/// function finds that fd by scanning /proc/self/fd and checking each
+/// candidate fd with getsockopt(SO_DOMAIN).
+fn find_inherited_socket_fd() -> Result<i32, String> {
+    use std::fs;
+    use std::os::unix::io::FromRawFd;
+
+    let entries = fs::read_dir("/proc/self/fd")
+        .map_err(|e| format!("read /proc/self/fd: {e}"))?;
+
+    let mut candidates: Vec<i32> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().to_str()?.parse::<i32>().ok())
+        .filter(|&n| n > 2) // skip stdin/stdout/stderr
+        .collect();
+    candidates.sort_unstable();
+
+    for fd in candidates {
+        // Try wrapping as a socket; getsockname will fail on non-sockets.
+        let result = unsafe {
+            libc_getsockopt_so_type(fd)
+        };
+        if result.is_ok() {
+            return Ok(fd);
+        }
+    }
+    Err("no inherited Unix socket found".to_string())
+}
+
+/// Check if fd is a socket using getsockopt(SO_TYPE).
+/// Returns Ok(()) if fd is a socket, Err otherwise.
+unsafe fn libc_getsockopt_so_type(fd: i32) -> Result<(), String> {
+    use std::mem;
+    let mut optval: libc::c_int = 0;
+    let mut optlen = mem::size_of::<libc::c_int>() as libc::socklen_t;
+    let ret = libc::getsockopt(
+        fd,
+        libc::SOL_SOCKET,
+        libc::SO_TYPE,
+        &mut optval as *mut _ as *mut libc::c_void,
+        &mut optlen,
+    );
+    if ret == 0 { Ok(()) } else { Err("not a socket".to_string()) }
 }
 
 /// Parse `user:password` credential strings.

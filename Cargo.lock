@@ -265,6 +265,7 @@ dependencies = [
  "futures",
  "hex",
  "indicatif",
+ "libc",
  "oci-spec",
  "reqwest",
  "serde",
