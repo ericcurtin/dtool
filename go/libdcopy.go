@@ -793,8 +793,17 @@ type proxyReply struct {
 const maxMsgSize = 32 * 1024
 
 func runImageProxy(sockFD int) error {
-	fmt.Fprintf(os.Stderr, "[dcopy-proxy] starting on fd %d DCOPY_OCI_DIR=%s\n",
-		sockFD, os.Getenv("DCOPY_OCI_DIR"))
+	ppidForLog := os.Getppid()
+	fmt.Fprintf(os.Stderr, "[dcopy-proxy] starting on fd %d DCOPY_OCI_DIR=%s DCOPY_OCI_FD=%s ppid=%d\n",
+		sockFD, os.Getenv("DCOPY_OCI_DIR"), os.Getenv("DCOPY_OCI_FD"), ppidForLog)
+	if fdStr := os.Getenv("DCOPY_OCI_FD"); fdStr != "" {
+		testDir := fmt.Sprintf("/proc/%d/fd/%s", ppidForLog, fdStr)
+		if entries, err := os.ReadDir(testDir); err == nil {
+			fmt.Fprintf(os.Stderr, "[dcopy-proxy] OCI dir %s accessible: %d entries\n", testDir, len(entries))
+		} else {
+			fmt.Fprintf(os.Stderr, "[dcopy-proxy] OCI dir %s NOT accessible: %v\n", testDir, err)
+		}
+	}
 
 	// Wrap the inherited SEQPACKET fd as a *net.UnixConn.
 	nc, err := net.FileConn(os.NewFile(uintptr(sockFD), "proxy"))
@@ -960,6 +969,22 @@ func runImageProxy(sockFD int) error {
 				continue
 			}
 			blobPath := blobFilePath(img.ociDir, digest)
+			fmt.Fprintf(os.Stderr, "[dcopy-proxy] GetBlob ociDir=%s digest=%s blobPath=%s\n",
+				img.ociDir, digest, blobPath)
+			// List a few blobs in the dir to diagnose missing files
+			if blobDirPath := filepath.Join(img.ociDir, "blobs", "sha256"); true {
+				if entries, dirErr := os.ReadDir(blobDirPath); dirErr == nil {
+					fmt.Fprintf(os.Stderr, "[dcopy-proxy] blobs/sha256 has %d files\n", len(entries))
+					if len(entries) > 0 {
+						fmt.Fprintf(os.Stderr, "[dcopy-proxy]   first: %s\n", entries[0].Name())
+						if len(entries) > 1 {
+							fmt.Fprintf(os.Stderr, "[dcopy-proxy]   last:  %s\n", entries[len(entries)-1].Name())
+						}
+					}
+				} else {
+					fmt.Fprintf(os.Stderr, "[dcopy-proxy] cannot read blobs/sha256: %v\n", dirErr)
+				}
+			}
 			fi, err := os.Stat(blobPath)
 			if err != nil {
 				sendErr(err.Error())
