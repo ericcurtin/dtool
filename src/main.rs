@@ -295,6 +295,8 @@ async fn dispatch(cmd: Commands, _root: &str) -> error::Result<()> {
 
 /// Scan /proc/self/fd for an inherited Unix socket fd (> 2).
 ///
+/// Logs all found fds to stderr for debugging.
+///
 /// containers-image-proxy-rs v0.9+ passes the proxy socket via fd
 /// inheritance (CommandExt::fd) without a --sockfd argument.  This
 /// function finds that fd by scanning /proc/self/fd and checking each
@@ -313,16 +315,19 @@ fn find_inherited_socket_fd() -> Result<i32, String> {
         .collect();
     candidates.sort_unstable();
 
-    for fd in candidates {
-        // Try wrapping as a socket; getsockname will fail on non-sockets.
-        let result = unsafe {
-            libc_getsockopt_so_type(fd)
-        };
+    let mut sockets = Vec::new();
+    for fd in &candidates {
+        let result = unsafe { libc_getsockopt_so_type(*fd) };
+        eprintln!("[dcopy-proxy] fd {} is_socket={}", fd, result.is_ok());
         if result.is_ok() {
-            return Ok(fd);
+            sockets.push(*fd);
         }
     }
-    Err("no inherited Unix socket found".to_string())
+    // The inherited socket from containers-image-proxy is the FIRST socket
+    // opened before our Go runtime starts (which creates its own sockets).
+    // Use the lowest-numbered socket fd.
+    sockets.into_iter().next()
+        .ok_or_else(|| "no inherited Unix socket found".to_string())
 }
 
 /// Check if fd is a socket using getsockopt(SO_TYPE).
