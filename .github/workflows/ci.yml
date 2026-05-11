@@ -67,7 +67,8 @@ jobs:
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             echo "version=$(echo '${{ github.ref_name }}' | sed 's/^v//')" >> "$GITHUB_OUTPUT"
           else
-            echo "version=0.0.0~dev" >> "$GITHUB_OUTPUT"
+            SHORT="${{ github.sha }}"
+            echo "version=0.0.0+${SHORT:0:7}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build Debian package
@@ -113,6 +114,16 @@ jobs:
       contents: write
 
     steps:
+      - name: Compute release tag
+        id: rel
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            SHORT="${{ github.sha }}"
+            echo "tag=main-${SHORT:0:7}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -126,8 +137,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name:   ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
-          name:       ${{ github.ref_type == 'tag' && github.ref_name || 'Latest build' }}
+          tag_name:   ${{ steps.rel.outputs.tag }}
+          name:       ${{ steps.rel.outputs.tag }}
           prerelease: false
           draft:      false
           generate_release_notes: ${{ github.ref_type == 'tag' }}
