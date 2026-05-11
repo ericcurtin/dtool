@@ -101,8 +101,7 @@ jobs:
 
   release:
     name: Create Release
-    # Run on every push to main (rolling "latest" pre-release) and on every
-    # version tag (proper versioned release).  Skip on PRs.
+    # Run on every push to main and on every version tag.  Skip on PRs.
     if: >-
       github.event_name == 'push' && (
         github.ref == 'refs/heads/main' ||
@@ -124,15 +123,12 @@ jobs:
       - name: List release assets
         run: ls -lh dist/
 
-      # On a version tag (e.g. v1.2.3): create a proper numbered release.
-      # On every other push to main: overwrite the rolling "latest" pre-release
-      # so the most recent build is always available without manual tagging.
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name:   ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
           name:       ${{ github.ref_type == 'tag' && github.ref_name || 'Latest build' }}
-          prerelease: ${{ github.ref_type != 'tag' }}
+          prerelease: false
           draft:      false
           generate_release_notes: ${{ github.ref_type == 'tag' }}
           files: dist/*
