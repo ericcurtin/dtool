@@ -617,6 +617,12 @@ func daemonToOCIDir(imageName, destPath string) error {
 		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 			return fmt.Errorf("mkdir for %s: %w", hdr.Name, err)
 		}
+		if hdr.Typeflag == tar.TypeDir {
+			if err := os.MkdirAll(dst, 0755); err != nil {
+				return fmt.Errorf("mkdir %s: %w", hdr.Name, err)
+			}
+			continue
+		}
 		if hdr.Typeflag == tar.TypeLink {
 			// Hard link: point to the already-written target on disk.
 			src := filepath.Join(tmpDir, filepath.Clean("/"+hdr.Linkname))
