@@ -16,8 +16,10 @@ jobs:
         include:
           - arch: x86_64
             runner: ubuntu-24.04
+            deb_arch: amd64
           - arch: aarch64
             runner: ubuntu-24.04-arm
+            deb_arch: arm64
 
     runs-on: ${{ matrix.runner }}
 
@@ -58,6 +60,44 @@ jobs:
         with:
           name: dtool-${{ matrix.arch }}-linux
           path: dtool-${{ matrix.arch }}-linux
+
+      - name: Determine package version
+        id: pkg_version
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "version=$(echo '${{ github.ref_name }}' | sed 's/^v//')" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0~dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Debian package
+        run: |
+          PKG=dtool
+          VER="${{ steps.pkg_version.outputs.version }}"
+          ARCH=${{ matrix.deb_arch }}
+          PKGDIR="${PKG}_${VER}_${ARCH}"
+
+          mkdir -p "${PKGDIR}/DEBIAN"
+          mkdir -p "${PKGDIR}/usr/bin"
+
+          cp target/release/dtool "${PKGDIR}/usr/bin/dtool"
+          chmod 755 "${PKGDIR}/usr/bin/dtool"
+
+          cat > "${PKGDIR}/DEBIAN/control" << EOF
+          Package: ${PKG}
+          Version: ${VER}
+          Architecture: ${ARCH}
+          Maintainer: dtool maintainers
+          Description: Docker image copy utility
+          EOF
+
+          dpkg-deb --build --root-owner-group "${PKGDIR}"
+
+      - name: Upload Debian package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dtool-${{ matrix.arch }}-linux-deb
+          path: dtool_${{ steps.pkg_version.outputs.version }}_${{ matrix.deb_arch }}.deb
 
   release:
     name: Create Release
