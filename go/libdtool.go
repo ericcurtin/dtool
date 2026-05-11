@@ -594,8 +594,16 @@ func daemonToOCIDir(imageName, destPath string) error {
 		return fmt.Errorf("docker GET image returned %d: %s", resp.StatusCode, body)
 	}
 
-	// ── Read every tar entry into memory ─────────────────────────────────────
-	entries := map[string][]byte{}
+	// ── Stream tar entries to temp files on disk ─────────────────────────────
+	// Avoid loading the entire image into RAM (can be 10+ GB for large images).
+	// Each tar entry is written to tmpDir/hdr.Name on disk; hard links are
+	// resolved as actual filesystem hard links.
+	tmpDir, err := os.MkdirTemp("", "dtool-oci-*")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
 	tr := tar.NewReader(resp.Body)
 	for {
 		hdr, err := tr.Next()
@@ -605,26 +613,36 @@ func daemonToOCIDir(imageName, destPath string) error {
 		if err != nil {
 			return fmt.Errorf("read tar: %w", err)
 		}
-		// Handle hard links: copy data from the already-seen link target.
+		dst := filepath.Join(tmpDir, filepath.Clean("/"+hdr.Name))
+		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+			return fmt.Errorf("mkdir for %s: %w", hdr.Name, err)
+		}
 		if hdr.Typeflag == tar.TypeLink {
-			if targetData, ok := entries[hdr.Linkname]; ok {
-				entries[hdr.Name] = targetData
-			} else {
-				return fmt.Errorf("hard link target %s not yet seen for %s", hdr.Linkname, hdr.Name)
+			// Hard link: point to the already-written target on disk.
+			src := filepath.Join(tmpDir, filepath.Clean("/"+hdr.Linkname))
+			if err := os.Link(src, dst); err != nil {
+				// Cross-device or other error — fall back to a copy.
+				if err2 := copyFile(src, dst); err2 != nil {
+					return fmt.Errorf("hard link %s → %s: %w", hdr.Linkname, hdr.Name, err)
+				}
 			}
 			continue
 		}
-		data, err := io.ReadAll(tr)
+		f, err := os.Create(dst)
 		if err != nil {
-			return fmt.Errorf("read tar entry %s: %w", hdr.Name, err)
+			return fmt.Errorf("create %s: %w", hdr.Name, err)
 		}
-		entries[hdr.Name] = data
+		if _, err := io.Copy(f, tr); err != nil {
+			f.Close()
+			return fmt.Errorf("write %s: %w", hdr.Name, err)
+		}
+		f.Close()
 	}
 
 	// ── Parse manifest.json ───────────────────────────────────────────────────
-	manifestJSON, ok := entries["manifest.json"]
-	if !ok {
-		return fmt.Errorf("manifest.json not found in docker archive")
+	manifestJSON, err := os.ReadFile(filepath.Join(tmpDir, "manifest.json"))
+	if err != nil {
+		return fmt.Errorf("manifest.json not found in docker archive: %w", err)
 	}
 	var archiveManifests []dockerArchiveManifest
 	if err := json.Unmarshal(manifestJSON, &archiveManifests); err != nil {
@@ -642,65 +660,101 @@ func daemonToOCIDir(imageName, destPath string) error {
 		return fmt.Errorf("create blobs dir: %w", err)
 	}
 
-	writeBlob := func(data []byte) (string, error) {
+	// writeBlobBytes writes a small in-memory blob (manifest, config, index).
+	writeBlobBytes := func(data []byte) (string, error) {
 		dgst := sha256Hex(data)
-		path := filepath.Join(blobsDir, dgst)
-		if err := os.WriteFile(path, data, 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(blobsDir, dgst), data, 0644); err != nil {
 			return "", fmt.Errorf("write blob %s: %w", dgst, err)
 		}
 		return "sha256:" + dgst, nil
 	}
 
+	// writeBlobStream hashes and copies a reader directly to the blob store
+	// without loading the entire content into RAM.
+	writeBlobStream := func(r io.Reader) (string, int64, error) {
+		tmp, err := os.CreateTemp(blobsDir, ".tmp-blob-*")
+		if err != nil {
+			return "", 0, fmt.Errorf("create temp blob: %w", err)
+		}
+		h := sha256.New()
+		n, err := io.Copy(io.MultiWriter(tmp, h), r)
+		tmp.Close()
+		if err != nil {
+			os.Remove(tmp.Name())
+			return "", 0, fmt.Errorf("write blob stream: %w", err)
+		}
+		dgst := hex.EncodeToString(h.Sum(nil))
+		final := filepath.Join(blobsDir, dgst)
+		if err := os.Rename(tmp.Name(), final); err != nil {
+			os.Remove(tmp.Name())
+			return "", 0, fmt.Errorf("rename blob: %w", err)
+		}
+		return "sha256:" + dgst, n, nil
+	}
+
 	// oci-layout marker file (required by OCI spec)
-	ociLayoutMarker := []byte(`{"imageLayoutVersion":"1.0.0"}`)
-	if err := os.WriteFile(filepath.Join(destPath, "oci-layout"), ociLayoutMarker, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(destPath, "oci-layout"),
+		[]byte(`{"imageLayoutVersion":"1.0.0"}`), 0644); err != nil {
 		return fmt.Errorf("write oci-layout: %w", err)
 	}
 
 	// ── Write config blob ─────────────────────────────────────────────────────
-	configData, ok := entries[am.Config]
-	if !ok {
-		return fmt.Errorf("config %s not found in docker archive", am.Config)
+	configData, err := os.ReadFile(filepath.Join(tmpDir, am.Config))
+	if err != nil {
+		return fmt.Errorf("config %s not found in docker archive: %w", am.Config, err)
 	}
-	configDigest, err := writeBlob(configData)
+	configDigest, err := writeBlobBytes(configData)
 	if err != nil {
 		return err
 	}
 
 	// ── Write layer blobs ─────────────────────────────────────────────────────
-	// Docker-archive layers are stored as plain (uncompressed) tars.
-	// OCI requires gzip-compressed layers.
+	// Layers are streamed one at a time — never fully loaded into RAM.
 	ociLayers := make([]ociDescriptor, 0, len(am.Layers))
 	for _, layerPath := range am.Layers {
-		layerData, ok := entries[layerPath]
-		if !ok {
-			return fmt.Errorf("layer %s not found in docker archive", layerPath)
-		}
-
-		// Gzip the layer if it is not already compressed.
-		var blobData []byte
-		if isGzip(layerData) {
-			blobData = layerData
-		} else {
-			var buf bytes.Buffer
-			gw := gzip.NewWriter(&buf)
-			if _, err := gw.Write(layerData); err != nil {
-				return fmt.Errorf("gzip layer: %w", err)
-			}
-			if err := gw.Close(); err != nil {
-				return fmt.Errorf("gzip close: %w", err)
-			}
-			blobData = buf.Bytes()
-		}
-
-		layerDigest, err := writeBlob(blobData)
+		src := filepath.Join(tmpDir, layerPath)
+		f, err := os.Open(src)
 		if err != nil {
-			return err
+			return fmt.Errorf("layer %s not found in docker archive: %w", layerPath, err)
+		}
+
+		// Peek at the first two bytes to detect gzip without reading the whole file.
+		var magic [2]byte
+		n, _ := f.Read(magic[:])
+		f.Close()
+		alreadyGzip := n == 2 && magic[0] == 0x1f && magic[1] == 0x8b
+
+		// Re-open for the actual streaming write.
+		f, err = os.Open(src)
+		if err != nil {
+			return fmt.Errorf("reopen layer %s: %w", layerPath, err)
+		}
+
+		var layerDigest string
+		var layerSize int64
+		if alreadyGzip {
+			layerDigest, layerSize, err = writeBlobStream(f)
+		} else {
+			// Pipe through gzip on the fly — no intermediate buffer needed.
+			pr, pw := io.Pipe()
+			var gzErr error
+			go func() {
+				gw := gzip.NewWriter(pw)
+				if _, gzErr = io.Copy(gw, f); gzErr == nil {
+					gzErr = gw.Close()
+				}
+				pw.CloseWithError(gzErr)
+			}()
+			layerDigest, layerSize, err = writeBlobStream(pr)
+		}
+		f.Close()
+		if err != nil {
+			return fmt.Errorf("write layer %s: %w", layerPath, err)
 		}
 		ociLayers = append(ociLayers, ociDescriptor{
 			MediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
 			Digest:    layerDigest,
-			Size:      int64(len(blobData)),
+			Size:      layerSize,
 		})
 	}
 
@@ -719,7 +773,7 @@ func daemonToOCIDir(imageName, destPath string) error {
 	if err != nil {
 		return fmt.Errorf("marshal OCI manifest: %w", err)
 	}
-	manifestDigest, err := writeBlob(manifestData)
+	manifestDigest, err := writeBlobBytes(manifestData)
 	if err != nil {
 		return err
 	}
@@ -1227,6 +1281,22 @@ func readOCIManifest(ociDir, tag string) (data []byte, digest string, err error)
 }
 
 // sha256Hex returns the hex-encoded SHA-256 digest of data.
+// copyFile copies src to dst as a fallback when os.Link fails.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
+}
+
 func sha256Hex(data []byte) string {
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:])
